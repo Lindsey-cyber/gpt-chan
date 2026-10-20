@@ -14,7 +14,15 @@ from app.storage import Storage
 log = logging.getLogger(__name__)
 
 def requested_image(text: str) -> bool:
-    return bool(re.search(r'(?:帮我|给我|请|现在)?(?:画|绘制|生成|做)(?:一张|一幅|个)?(?:图片|图|插画|头像|壁纸)|(?:画一张|画一幅|画个)|(?:生图)', text))
+    t = re.sub(r'\s+', '', text)
+    if re.search(r'(怎么|如何|为什么|原理|教程|会不会|能不能|可以吗|解释|介绍|教我).{0,12}(画图|绘画|生图|生成图片)', t):
+        return False
+    if re.search(r'(画图呢|图片呢|图呢|画好了吗|图片在哪里|图在哪里|画好了没)', t):
+        return False
+    return bool(re.search(r'(画|绘制|生成|制作|做).{0,20}(自画像|画像|肖像|头像|插画|壁纸|图片|图像|图画|一张图|一幅画)|(画一张|画一幅|画一个|生图|帮我画|给我画|请画|画你自己|画自己|画个你)', t))
+
+def image_followup(text: str) -> bool:
+    return bool(re.search(r'(画图|图片|图|画)呢[？?！!]*$|(图片|图)(在哪里|在哪|怎么还没)', text.strip()))
 
 def next_mood(text: str, previous: str, remaining: int) -> tuple[str, int]:
     if any(x in text for x in ('别傲娇','认真一点','别撒娇','严肃一点')):
@@ -103,6 +111,9 @@ def build_router(settings: Settings, store: Storage, brain: Brain) -> Router:
             await message.answer('这段太长了，主人分几次发嘛。');return
         if requested_image(text):
             await send_image(message, text)
+            return
+        if image_followup(text):
+            await message.answer('如果刚才没收到真正的图片，那就是没有生成成功。请再发一次画图要求，我会直接发送图片，不会编造链接。')
             return
         uid=message.from_user.id
         async with locks.setdefault(uid,asyncio.Lock()):
