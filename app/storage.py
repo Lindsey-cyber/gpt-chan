@@ -25,7 +25,8 @@ class Storage:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(user_id,fact)
                 );
-                CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id,id);\n                CREATE TABLE IF NOT EXISTS character_state (user_id INTEGER PRIMARY KEY, mood TEXT NOT NULL DEFAULT 'steady', remaining INTEGER NOT NULL DEFAULT 0);
+                CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id,id);
+                CREATE TABLE IF NOT EXISTS character_state (user_id INTEGER PRIMARY KEY, mood TEXT NOT NULL DEFAULT 'steady', remaining INTEGER NOT NULL DEFAULT 0);
             """)
             await db.commit()
 
