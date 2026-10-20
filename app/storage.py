@@ -26,7 +26,7 @@ class Storage:
                     UNIQUE(user_id,fact)
                 );
                 CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id,id);
-                CREATE TABLE IF NOT EXISTS character_state (user_id INTEGER PRIMARY KEY, mood TEXT NOT NULL DEFAULT 'steady', remaining INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS character_state (user_id INTEGER PRIMARY KEY, mood TEXT NOT NULL DEFAULT 'steady', remaining INTEGER NOT NULL DEFAULT 0);\n                CREATE TABLE IF NOT EXISTS image_tasks (user_id INTEGER PRIMARY KEY, prompt TEXT NOT NULL, status TEXT NOT NULL, updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
             """)
             await db.commit()
 
@@ -51,6 +51,7 @@ class Storage:
         async with aiosqlite.connect(self.path) as db:
             await db.execute('DELETE FROM messages WHERE user_id=?',(uid,))
             await db.execute('DELETE FROM character_state WHERE user_id=?',(uid,))
+            await db.execute('DELETE FROM image_tasks WHERE user_id=?',(uid,))
             await db.commit()
 
     async def memories(self, uid: int, limit: int):
@@ -88,3 +89,12 @@ class Storage:
         async with aiosqlite.connect(self.path) as db:
             row = await (await db.execute("SELECT COUNT(*) FROM messages WHERE user_id=? AND role='user'",(uid,))).fetchone()
         return row[0]
+
+    async def image_task(self, uid: int):
+        async with aiosqlite.connect(self.path) as db:
+            return await (await db.execute('SELECT prompt,status FROM image_tasks WHERE user_id=?',(uid,))).fetchone()
+
+    async def set_image_task(self, uid: int, prompt: str, status: str):
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute('INSERT INTO image_tasks(user_id,prompt,status) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET prompt=excluded.prompt,status=excluded.status,updated_at=CURRENT_TIMESTAMP',(uid,prompt,status))
+            await db.commit()
