@@ -1,0 +1,9 @@
+services:
+  gptchan:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - gptchan-data:/app/data
+volumes:
+  gptchan-data:
