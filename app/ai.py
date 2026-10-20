@@ -17,7 +17,7 @@ class Brain:
             model=self.text_model, instructions=instructions,
             input=history+[{'role':'user','content':prompt}], max_output_tokens=1600)
         answer = (resp.output_text or '').strip()
-        if re.search(r'https?://|www\\.|\\!\\[[^]]*\\]\\(', answer, re.I) and re.search(r'(图片|图像|画好|绘制|上传|生成|imgur|png|jpg|jpeg|webp)', answer, re.I):
+        if ('http://' in answer.lower() or 'https://' in answer.lower() or 'www.' in answer.lower()) and any(x in answer.lower() for x in ('图片','图像','画好','绘制','上传','生成','imgur','png','jpg','jpeg','webp')):
             return '抱歉，刚才的图片链接不可信。本龙不能凭空上传图片；请重新发一句「画一张……」，我会走真正的生图功能。'
         if re.search(r'(正在为你画|正在生成图片|已经上传图片|图片已经生成|画好了.*https?://)', answer):
             return '我还没有真正生成图片。请直接告诉我画什么，我会使用图片功能发送照片。'
