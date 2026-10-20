@@ -1,27 +1,35 @@
-# GPT娘 — Telegram 白龙娘 Bot
+# GPT娘 · 白龙姬
 
-Private, lightweight Telegram character bot using Python, aiogram, OpenAI Responses API, SQLite, and Docker.
-
-## Capabilities
-
-- Persona in `personas/gptchan.md`: white dragon girl, blue eyes, blue/white/black/silver palette, playful tsundere who naturally calls the user 主人
-- Telegram private-chat **numeric-ID allowlist**, default deny (the public `/id` route only returns the sender's own ID)
-- Conservative **automatic** memory extraction, isolated per user; inspect with `/memories`, erase with `/forget <id>` or `/forget all`
-- Rolling history (up to 24 messages / 32000 characters), stored in SQLite and cleared with `/new`
-- Image generation by natural-language requests such as `帮我画一张白龙娘头像`, and explicit fallback `/draw <prompt>`
-- Docker Compose and named volume for persistent data; no webhook or public port required
+Private Telegram character bot: Python 3.12, aiogram, OpenAI Responses + Images APIs, SQLite. Run exactly one polling process with persistent storage at `/app/data`.
 
 ## Setup
 
-1. Copy `.env.example` to `.env`. Set `TELEGRAM_BOT_TOKEN` and `OPENAI_API_KEY` from your own secret manager; **never commit credentials**.
-2. Ask the two intended Telegram accounts (`@allliiita` and `@HammerZhou`) to send `/id`; collect their **numeric** Telegram IDs. Set `ALLOWED_USER_IDS=id1,id2`. Usernames are not used for authorization.
-3. Local: `python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && DATABASE_PATH=./data/gptchan.sqlite3 python -m app.main`
-4. Docker: `docker compose up -d --build`. Deploy as exactly **one** long-polling process on a cloud worker/VPS and persist `/app/data`.
+Copy `.env.example` to `.env`, supply secrets using Railway variables, and set `ALLOWED_USER_IDS` to the two numeric IDs. Never commit secrets. `TEXT_MODEL` and `IMAGE_MODEL` are preserved; defaults remain `gpt-4.1-mini` and `gpt-image-1-mini`. Account access must be verified separately; no automatic model substitutions.
 
-## Constraints and roadmap
+`python -m pip install -r requirements.txt`, then `python -m app.main`. Docker Compose persists `/app/data`. Railway volume ownership is fixed at container start and the worker runs as `bot`.
 
-- Automatic memory is conservative, heuristic, and may miss things; no vector DB, no cross-user memory sharing. Sensitive information should not be recorded. Users can review and remove stored memories. Memory extraction involves additional model requests.
-- Image generation consumes paid API credits; image model availability differs per account.
-- Current natural-language drawing detection uses simple rule-based intent matching. It may miss some requests or match some unintended prompts. The image model does not automatically inherit chat context.
-- The repository is an **initial foundation**, not an end-to-end verified deployment. Use test credentials in your own hosting environment and watch usage.
-- Planned: schema migrations, model-powered tool routing, structured memory updates/merging, optional bot bindings for multi-character support, observability, automated dependency checks.
+## Chat and images
+
+Natural requests, contextual revisions (精致一点), and continuations (继续出图) use a strict `generate_image` function call from the configured text model. The application validates the arguments, calls the Images API, caches PNG bytes, then sends a Telegram photo. It never presents the tool prompt as the generated result. `/draw <requirements>` is an explicit entry point through the same planner.
+
+The fixed character's supplied three-view image is `assets/gptchan_reference.png`. Self portraits use Images edits with the reference. The model must preserve the face, hair, horns, wings, tail, dress and accessories, but pixel-perfect identity is not guaranteed. To replace the shared visual reference, send a Telegram **photo** with caption `/setref`. It is validated and atomically installed at `/app/data/gptchan_reference.jpg`; failed downloads preserve the previous reference. `/ref` reports availability. The reference is intentionally shared; conversation, memory, mood, tasks and generated image caches are isolated by numeric user ID.
+
+`/new` clears only the sender's conversation, mood and image task; long-term memories stay. `/memories` lists memories. `/forget <id>` deletes only the sender's memory with that ID; `/forget all` clears their memories.
+
+## Reliability and costs
+
+All authorized updates for a user are serialized, including `/new`; different users have independent locks. Image generation is globally limited to one concurrent request. Persistent limits default to 12 attempts/user/hour and a 15-second cooldown. Attempts, including failures, consume the local limit. One request produces one 1024×1024 image at explicit `medium` quality. Change `IMAGE_QUALITY` to low/medium/high if wanted. No model is changed automatically.
+
+Image calls have a 240-second timeout and **no automatic retries** because a timeout can hide a completed paid generation. Text calls have two bounded SDK retries. Rate/quota and access errors get concise messages. Successful images are cached per user before sending; if Telegram fails, “图片呢” uses `image_status` to resend cached bytes without regenerating. Restart marks unfinished generation as interrupted and never silently replays it. Only the latest generated PNG per user is retained.
+
+Memory extraction runs every fourth text exchange or on explicit memory cues, using a durable counter independent of rolling history. Logs exclude raw exception bodies and private conversation content; image request IDs and token usage are logged for billing investigation. Text Responses use `store=False`.
+
+Before the first storage upgrade, an existing SQLite database is backed up with SQLite's online backup API to `gptchan.sqlite3.pre-reliability.bak` on the same volume. Schema updates are additive (`CREATE TABLE IF NOT EXISTS`); no existing history/memory schema or volume is replaced. This local snapshot does not replace off-platform backups. Do not delete the volume or run multiple replicas.
+
+## Verification and deployment
+
+Run `python -m compileall -q app` and `python -m pytest -q`. Tests use real aiogram dispatch with mocked Telegram transport and mocked OpenAI, testing isolation, command/photo routing, image states, cache resend, reference atomicity, API contracts, migration retention, concurrency and startup. GitHub Actions repeats both checks. Docker also runs both before an image can be deployed, so a failed test prevents deployment even if Railway's GitHub check waiting is disabled.
+
+For an authorized real-API deployment probe, set `RUN_STARTUP_PROBE=true`. It runs once per persistent volume, guarded by `api-probe-v1.json`, tests text output and the three image request/refinement/continuation decisions, and performs **one paid reference-image edit**. Result bytes go to `api-probe-portrait.png`. It never sends fabricated incoming Telegram updates or unsolicited chat messages. The marker records attempted/passed/failed; restarts do not incur more probe cost. Logs explicitly distinguish API verification from untested Telegram photo delivery.
+
+A Railway `SUCCESS` label only proves the deployment lifecycle completed. Check `bot_ready`, `Run polling`, and subsequent real `Update ... is handled` logs; verify a real Telegram user receives text and a photo. API probes and mocked tests do not establish real Telegram delivery or subjective visual consistency.

@@ -1,323 +1,243 @@
 import asyncio
 import logging
-import re
 from pathlib import Path
+from uuid import uuid4
 
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import BufferedInputFile, Message
+from aiogram.types import BufferedInputFile, FSInputFile, Message
+from openai import APIStatusError, APITimeoutError, RateLimitError
 
-from app.ai import Brain
+from app.ai import Brain, ImageRequest, ImageStatus
 from app.config import Settings
+from app.mood import next_mood
 from app.storage import Storage
 
 log = logging.getLogger(__name__)
+ROOT = Path(__file__).resolve().parent.parent
+PORTRAIT = ('GPT娘·白龙姬，同一位成年白龙少女。以参考三视图为角色身份依据：银白色长发、浅紫蓝眼睛、'
+            '白色弯曲龙角、淡紫色膜翼、白鳞长尾、白银淡紫的龙纹长裙、玫瑰发饰与服装配饰。'
+            '保持脸型、发型、角、翅膀、尾巴和服装一致，参考图优先于文字中的外貌冲突。'
+            '画一幅完整插画，不要三视图、文字或水印。具体场景与构图：')
 
-def requested_image(text: str) -> bool:
-    t = re.sub(r'\s+', '', text)
-    if re.search(r'(怎么|如何|为什么|原理|教程|会不会|能不能|可以吗|解释|介绍|教我).{0,12}(画图|绘画|生图|生成图片)', t):
-        return False
-    if re.search(r'(画图呢|图片呢|图呢|画好了吗|图片在哪里|图在哪里|画好了没)', t):
-        return False
-    return bool(re.search(r'(画|绘制|生成|制作|做).{0,20}(自画像|画像|肖像|头像|插画|壁纸|图片|图像|图画|一张图|一幅画)|(画一张|画一幅|画一个|生图|帮我画|给我画|请画|画你自己|画自己|画个你)', t))
+def report_error(label, exc):
+    # Do not log exception bodies, requests, tokens, prompts, or private messages.
+    log.error('%s type=%s status=%s request_id=%s', label, type(exc).__name__,
+              getattr(exc, 'status_code', None), getattr(exc, 'request_id', None))
 
-def image_followup(text: str) -> bool:
-    return bool(re.search(r'(画图|图片|图|画)呢[？?！!]*$|(图片|图)(在哪里|在哪|怎么还没)', text.strip()))
+def error_message(exc):
+    if isinstance(exc, RateLimitError):
+        return '请求额度或速率暂时受限，稍后再试。'
+    if isinstance(exc, APITimeoutError):
+        return '这次等待超时了，结果暂时无法确认。我没有自动重画；需要的话请明确说再试一次。'
+    if isinstance(exc, APIStatusError) and exc.status_code in (400, 401, 403, 404):
+        return '这次请求被接口拒绝了，需要检查模型权限、账户配置或绘图要求。'
+    return '这次没能完成，稍后再试一次吧。'
 
-def image_refinement(text: str) -> bool:
-    t = text.strip()
-    return bool(re.search(r'(精致|细致|细节|更好看|好看一点|可爱一点|写实|二次元|半身|全身|Q版|高清|换个风格|再画|重画|重新画|再来一张|颜色|表情|背景|发型|服装|构图|改一下|调整一下)', t)) and len(t) <= 110
+class UserSerial(BaseMiddleware):
+    def __init__(self, settings):
+        self.settings, self.locks = settings, {}
 
-def portrait_prompt(text: str) -> str:
-    if re.search(r'(你自己|自己的|你的|白龙娘|白龙姬|GPT娘|你本人|自画像)', text):
-        return ('画出同一个固定角色 GPT娘·白龙姬。精致日系二次元人物插画，清冷可爱、自然灵动的少女，银白色柔顺长发，清澈冰蓝眼睛，两枚白色小龙角，白银黑蓝配色的精致改良龙纹服装，优雅细节、干净的线稿、细腻光影、自然面部比例，柔和但有层次的配色。人物长相和服装设计尽量保持一致。不要文字、不要水印、不要无关人物。直接绘制最终成图，不要输出绘图说明。用户的具体构图和风格要求优先：' + text)
-    return text
+    async def __call__(self, handler, event, data):
+        if event.from_user and event.from_user.id in self.settings.allowed_ids:
+            async with self.locks.setdefault(event.from_user.id, asyncio.Lock()):
+                return await handler(event, data)
+        return await handler(event, data)
 
-def next_mood(text: str, previous: str, remaining: int) -> tuple[str, int]:
-    if any(x in text for x in ('别傲娇','认真一点','别撒娇','严肃一点')):
-        return 'focused', 3
-    if any(x in text for x in ('难过','好累','焦虑','伤心','崩溃','不开心')):
-        return 'caring', 3
-    if any(x in text for x in ('摸摸头','摸头','揉揉头','抱抱')):
-        return 'soft-shy', 2
-    if any(x in text for x in ('你好可爱','你真可爱','夸夸你','你好棒','你真棒','喜欢你')):
-        return 'bashful-proud', 3
-    if any(x in text for x in ('你输了','你输啦','比一比','挑战你')):
-        return 'competitive-playful', 2
-    if any(x in text for x in ('我成功了','我做到了','好消息')):
-        return 'celebratory', 2
-    if any(x in text for x in ('报错','代码','怎么修','解释一下','原理','教程')):
-        return 'focused', 1
-    if remaining > 1:
-        return previous, remaining - 1
-    return 'steady', 0
+def reference_path(settings):
+    custom = Path(settings.database_path).parent / 'gptchan_reference.jpg'
+    return custom if custom.is_file() and custom.stat().st_size else ROOT / 'assets/gptchan_reference.png'
 
-def build_router(settings: Settings, store: Storage, brain: Brain) -> Router:
+async def save_reference(bot, photo, target):
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(f'.reference-{uuid4().hex}.jpg')
+    try:
+        await bot.download(photo, destination=temp)
+        from PIL import Image
+        with Image.open(temp) as img:
+            img.verify()
+        temp.replace(target)
+    finally:
+        temp.unlink(missing_ok=True)
+
+def build_router(settings, store, brain):
     router = Router()
-    locks: dict[int, asyncio.Lock] = {}
+    router.message.outer_middleware(UserSerial(settings))
+    image_slots = asyncio.Semaphore(1)
 
-    def permitted(message: Message) -> bool:
+    def permitted(message):
         return bool(message.from_user and message.from_user.id in settings.allowed_ids and message.chat.type == 'private')
 
     @router.message(Command('id'))
-    async def identity(message: Message):
-        if message.from_user:
+    async def identity(message):
+        if message.from_user and message.chat.type == 'private':
             await message.answer(f'你的 Telegram ID: {message.from_user.id}')
 
     @router.message(CommandStart())
-    async def start(message: Message):
+    async def start(message):
         if permitted(message):
-            await message.answer('主人来啦。今天想聊什么？')
+            await message.answer('在呀，今天想聊什么？')
 
     @router.message(Command('new'))
-    async def new(message: Message):
-        if not permitted(message): return
-        await store.clear_history(message.from_user.id)
-        await message.answer('新的对话开始了，主人。旧的短期上下文清空啦，长期记忆还在。')
+    async def new(message):
+        if permitted(message):
+            await store.clear_history(message.from_user.id)
+            await message.answer('新的对话开始啦，长期记忆还在。')
 
     @router.message(Command('memories'))
-    async def memories(message: Message):
+    async def memories(message):
         if not permitted(message): return
         rows = await store.memories(message.from_user.id, settings.memory_limit)
-        await message.answer('本龙娘记得这些：\n'+('\n'.join(f'{i}. {f}' for i,f in rows) if rows else '（还没有长期记忆）'))
+        await message.answer('我记得这些：\n'+ ('\n'.join(f'{i}. {f}' for i, f in rows) or '（暂无）'))
 
     @router.message(Command('forget'))
-    async def forget(message: Message):
+    async def forget(message):
         if not permitted(message): return
         arg = (message.text or '').split(maxsplit=1)
-        if len(arg)!=2 or (arg[1]!='all' and not arg[1].isdigit()):
-            await message.answer('用 /forget 记忆编号，或 /forget all 清空。');return
-        await store.forget(message.from_user.id,None if arg[1]=='all' else int(arg[1]))
+        if len(arg) != 2 or (arg[1] != 'all' and not arg[1].isdigit()):
+            await message.answer('用 /forget 记忆编号，或 /forget all 清空。')
+            return
+        await store.forget(message.from_user.id, None if arg[1] == 'all' else int(arg[1]))
         await message.answer('已经按你的要求删除了。')
 
-    @router.message(F.text, Command('setref'))
-    async def set_reference_help(message: Message):
-        if permitted(message):
-            await message.answer('把白龙姬的正式立绘作为照片发给我，并在照片说明里写 /setref。保存一次就够了。')
-
-    @router.message(F.photo, F.caption.startswith('/setref'))
-    async def reference_photo(message: Message):
+    @router.message(F.photo, Command('setref'))
+    async def reference_photo(message):
         if not permitted(message): return
-        target = Path(settings.database_path).parent / 'gptchan_reference.jpg'
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            await message.bot.download(message.photo[-1], destination=target)
-            if not target.is_file() or target.stat().st_size == 0:
-                raise RuntimeError('Reference photo was not saved')
-            await message.answer('收好啦！本龙的正式立绘已经保存成功。以后画我自己就会参考这张。')
-        except Exception:
-            log.exception('reference image save failed')
-            await message.answer('立绘保存失败了，稍后再试一次。')
+            await save_reference(message.bot, message.photo[-1], Path(settings.database_path).parent / 'gptchan_reference.jpg')
+            await message.answer('立绘收好啦，以后画我自己会参考它。')
+        except Exception as exc:
+            report_error('reference_save_failed', exc)
+            await message.answer('这次没存好，之前的立绘还在，可以再发一次。')
 
-    @router.message(F.text.in_({'存下来了吗', '保存了吗', '参考图保存了吗', '立绘保存了吗', '设定图保存了吗'}))
-    async def reference_status(message: Message):
-        if not permitted(message): return
-        target = Path(settings.database_path).parent / 'gptchan_reference.jpg'
-        if target.is_file() and target.stat().st_size > 0:
-            await message.answer('保存好了！我的正式立绘还在，画自画像时会用它作参考。')
-        else:
-            await message.answer('还没保存成功。把立绘作为照片发给我，照片说明写 /setref 就好。')
+    @router.message(Command('setref'))
+    async def reference_help(message):
+        if permitted(message):
+            await message.answer('把正式立绘作为照片发送，并在照片说明中写 /setref。')
 
-    async def send_image(message: Message, prompt: str):
+    @router.message(Command('ref'))
+    async def reference_status(message):
+        if permitted(message):
+            await message.answer('正式立绘已保存。' if reference_path(settings).is_file() else '暂时没有可用立绘。')
+
+    async def send_cached(message, task):
         uid = message.from_user.id
-        async with locks.setdefault(uid, asyncio.Lock()):
+        cached = Path(settings.database_path).parent / f'image_{uid}.png'
+        if task and task[1] in ('generated', 'delivery_failed') and cached.is_file():
             try:
-                await message.bot.send_chat_action(message.chat.id,'upload_photo')
-                await store.set_image_task(uid, prompt, 'generating')
-                ref_path = Path(settings.database_path).parent / 'gptchan_reference.jpg'
-                use_ref = bool(re.search(r'(你|自己|自画像|白龙娘|白龙姬|GPT娘)', prompt))
-                data = await brain.image(portrait_prompt(prompt), str(ref_path) if use_ref and ref_path.is_file() else None)
-                await message.answer_photo(BufferedInputFile(data,'gptchan.png'),caption='画好啦。要改哪里，直接告诉我就行。')
-                await store.set_image_task(uid, prompt, 'sent')
-            except Exception:
-                await store.set_image_task(uid, prompt, 'failed')
-                log.exception('image generation failed')
-                await message.answer('图片没生成成功，主人稍后再试吧。')
+                await message.answer_photo(FSInputFile(cached), caption='画好啦。')
+                await store.set_image_task(uid, task[0], 'sent')
+            except Exception as exc:
+                report_error('image_delivery_failed', exc)
+                await store.set_image_task(uid, task[0], 'delivery_failed')
+                await message.answer('图片已生成，但发送失败。说「图片呢」可以重发，不会重新画。')
+            return
+        status = task[1] if task else None
+        await message.answer({'sent': '上一张已经发送啦。要再画一张可以直接告诉我。',
+            'interrupted': '上次绘图被重启打断，结果无法确认。需要重画的话请明确告诉我。',
+            'failed': '上次没有成功；需要重画的话请明确告诉我。',
+            'generating': '上一张还在生成。'}.get(status, '目前没有待发送的图片。'))
+
+    async def send_image(message, request, original):
+        uid = message.from_user.id
+        prompt = (PORTRAIT if request.self_portrait else '') + request.prompt
+        if not await store.reserve_image(uid, settings.image_hourly_limit, settings.image_cooldown_seconds):
+            await message.answer('画得有点密啦，稍等一会儿再来。')
+            return
+        await store.set_image_task(uid, prompt, 'generating')
+        try:
+            async with image_slots:
+                await message.bot.send_chat_action(message.chat.id, 'upload_photo')
+                ref = str(reference_path(settings)) if request.self_portrait else None
+                data = await brain.image(prompt, ref, quality=settings.image_quality)
+                cached = Path(settings.database_path).parent / f'image_{uid}.png'
+                temp = cached.with_suffix('.tmp')
+                temp.write_bytes(data)
+                temp.replace(cached)
+            await store.set_image_task(uid, prompt, 'generated')
+            await send_cached(message, (prompt, 'generated'))
+            await store.add_exchange(uid, original, '[已生成图片；是否发送成功以图片任务状态为准]', settings.max_context_messages)
+        except Exception as exc:
+            await store.set_image_task(uid, prompt, 'failed')
+            report_error('image_generation_failed', exc)
+            await message.answer(error_message(exc))
 
     @router.message(Command('draw'))
-    async def draw(message: Message):
+    async def draw(message):
         if not permitted(message): return
         prompt = (message.text or '').partition(' ')[2].strip()
-        if not prompt:
-            await message.answer('主人，告诉我画什么呀！例如 /draw 蓝色星空下的白龙娘'); return
-        if len(prompt)>2000:
-            await message.answer('画图描述太长了，缩短一点吧。');return
-        await send_image(message, prompt)
+        if not prompt or len(prompt) > 3000:
+            await message.answer('用 /draw 加上绘图要求，最多3000字。')
+            return
+        # Explicit command still uses the model to resolve identity and context.
+        await respond(message, '请现在生成一张图片：' + prompt)
+
+    async def respond(message, text):
+        uid = message.from_user.id
+        try:
+            history = await store.history(uid, settings.max_context_messages, settings.max_context_chars)
+            memories = await store.memories(uid, settings.memory_limit)
+            task = await store.image_task(uid)
+            previous, remaining = await store.character_state(uid)
+            mood, remaining = next_mood(text, previous, remaining)
+            await message.bot.send_chat_action(message.chat.id, 'typing')
+            answer = await brain.chat(history, memories, text, mood, image_task=task)
+            if isinstance(answer, ImageRequest):
+                await send_image(message, answer, text)
+                return
+            if isinstance(answer, ImageStatus):
+                await send_cached(message, task)
+                return
+            for offset in range(0, len(answer), 3800):
+                await message.answer(answer[offset:offset+3800])
+            await store.set_character_state(uid, mood, remaining)
+            await store.add_exchange(uid, text, answer, settings.max_context_messages)
+            if await store.should_extract(uid) or any(w in text for w in ('记住', '我喜欢', '我讨厌', '以后请')):
+                try:
+                    facts = await brain.extract_memory(text, answer, memories)
+                    if facts: await store.save_memories(uid, facts, settings.memory_limit)
+                except Exception as exc:
+                    report_error('memory_extract_failed', exc)
+        except Exception as exc:
+            report_error('chat_failed', exc)
+            await message.answer(error_message(exc))
 
     @router.message(F.text)
-    async def chat(message: Message):
+    async def chat(message):
         if not permitted(message): return
-        text=(message.text or '').strip()
+        text = message.text.strip()
         if text.startswith('/'): return
-        if len(text)>8000:
-            await message.answer('这段太长了，主人分几次发嘛。');return
-        if requested_image(text) or bool(re.search(r'(给我看看你长什么样|画给我看|画出来给我看|想看你的样子|画张你的照片)', text)):
-
-            await send_image(message, text)
+        if len(text) > 8000:
+            await message.answer('这段太长啦，分几次发给我吧。')
             return
-        task = await store.image_task(message.from_user.id)
-        if task and any(phrase in text for phrase in ('继续出图', '开始出图', '出图吧', '直接出图', '继续画', '开始画', '就按这个画', '确认生成')):
-            await send_image(message, task[0])
-            return
-        if task and image_followup(text):
-            if task[1] == 'sent':
-                await message.answer('上一张已经作为 Telegram 图片发出啦。要重新生成就说「再画一张」。')
-            else:
-                await send_image(message, task[0])
-            return
-        if task and image_refinement(text):
-            await send_image(message, task[0] + '。进一步要求：' + text)
-            return
-        if image_followup(text):
-            await message.answer('我这边没有待发送的图片任务。请直接说「画一个……」，我会调用图片功能。')
-            return
-        uid=message.from_user.id
-        async with locks.setdefault(uid,asyncio.Lock()):
-            history=await store.history(uid,settings.max_context_messages,settings.max_context_chars)
-            memories=await store.memories(uid,settings.memory_limit)
-            try:
-                await message.bot.send_chat_action(message.chat.id,'typing')
-                previous,remaining=await store.character_state(uid)
-                mood,remaining=next_mood(text,previous,remaining)
-                answer=await brain.chat(history,memories,text,mood)
-                await store.set_character_state(uid,mood,remaining)
-                await store.add_exchange(uid,text,answer,settings.max_context_messages)
-                for offset in range(0,len(answer),3800):
-                    await message.answer(answer[offset:offset+3800])
-                should_extract = (await store.exchange_count(uid)) % 4 == 0 or any(w in text for w in ('记住', '我喜欢', '我讨厌', '以后请'))
-                if should_extract:
-                    try:
-                        facts=await brain.extract_memory(text,answer,memories)
-                        if facts: await store.save_memories(uid,facts,settings.memory_limit)
-                    except Exception:
-                        log.exception('memory extraction failed')
-            except Exception:
-                log.exception('chat failed')
-                await message.answer('主人，接口暂时出问题了……等一下再试嘛。')
+        await respond(message, text)
     return router
 
 async def main():
     logging.basicConfig(level=logging.INFO)
-    settings=Settings()
+    logging.getLogger('httpx').setLevel(logging.WARNING)
+    settings = Settings()
     if not settings.allowed_ids: raise RuntimeError('ALLOWED_USER_IDS must not be empty')
-    store=Storage(settings.database_path)
+    store = Storage(settings.database_path)
     await store.init()
-    persona=Path('personas/gptchan.md').read_text(encoding='utf-8')
-    brain=Brain(settings.openai_api_key,settings.text_model,settings.image_model,persona)
-    bot=Bot(settings.telegram_bot_token)
-    dp=Dispatcher()
-    dp.include_router(build_router(settings,store,brain))
+    brain = Brain(settings.openai_api_key, settings.text_model, settings.image_model,
+                  (ROOT / 'personas/gptchan.md').read_text(encoding='utf-8'))
+    bot = Bot(settings.telegram_bot_token)
+    dp = Dispatcher()
+    dp.include_router(build_router(settings, store, brain))
     try:
+        await bot.get_me()
         await bot.delete_webhook(drop_pending_updates=False)
+        log.info('bot_ready allowed_users=%d text_model=%s image_model=%s reference=%s',
+                 len(settings.allowed_ids), settings.text_model, settings.image_model, reference_path(settings).is_file())
+        if settings.run_startup_probe:
+            from app.probe import startup_probe
+            await startup_probe(brain, Path(settings.database_path).parent, reference_path(settings))
         await dp.start_polling(bot)
     finally:
+        await brain.client.close()
         await bot.session.close()
 
-if __name__=='__main__':
-    asyncio.run(main())
-))
-    async def reference_status(message: Message):
-        if not permitted(message): return
-        target = Path(settings.database_path).parent / 'gptchan_reference.jpg'
-        if target.is_file() and target.stat().st_size > 0:
-            await message.answer('保存好了！我的正式立绘还在，画自画像时会用它作参考。')
-        else:
-            await message.answer('还没保存成功。把立绘作为照片发给我，照片说明写 /setref 就好。')
-
-    async def send_image(message: Message, prompt: str):
-        uid = message.from_user.id
-        async with locks.setdefault(uid, asyncio.Lock()):
-            try:
-                await message.bot.send_chat_action(message.chat.id,'upload_photo')
-                await store.set_image_task(uid, prompt, 'generating')
-                ref_path = Path(settings.database_path).parent / 'gptchan_reference.jpg'
-                use_ref = bool(re.search(r'(你|自己|自画像|白龙娘|白龙姬|GPT娘)', prompt))
-                data = await brain.image(portrait_prompt(prompt), str(ref_path) if use_ref and ref_path.is_file() else None)
-                await message.answer_photo(BufferedInputFile(data,'gptchan.png'),caption='画好啦。要改哪里，直接告诉我就行。')
-                await store.set_image_task(uid, prompt, 'sent')
-            except Exception:
-                await store.set_image_task(uid, prompt, 'failed')
-                log.exception('image generation failed')
-                await message.answer('图片没生成成功，主人稍后再试吧。')
-
-    @router.message(Command('draw'))
-    async def draw(message: Message):
-        if not permitted(message): return
-        prompt = (message.text or '').partition(' ')[2].strip()
-        if not prompt:
-            await message.answer('主人，告诉我画什么呀！例如 /draw 蓝色星空下的白龙娘'); return
-        if len(prompt)>2000:
-            await message.answer('画图描述太长了，缩短一点吧。');return
-        await send_image(message, prompt)
-
-    @router.message(F.text)
-    async def chat(message: Message):
-        if not permitted(message): return
-        text=(message.text or '').strip()
-        if text.startswith('/'): return
-        if len(text)>8000:
-            await message.answer('这段太长了，主人分几次发嘛。');return
-        if requested_image(text) or bool(re.search(r'(给我看看你长什么样|画给我看|画出来给我看|想看你的样子|画张你的照片)', text)):
-
-            await send_image(message, text)
-            return
-        task = await store.image_task(message.from_user.id)
-        if task and any(phrase in text for phrase in ('继续出图', '开始出图', '出图吧', '直接出图', '继续画', '开始画', '就按这个画', '确认生成')):
-            await send_image(message, task[0])
-            return
-        if task and image_followup(text):
-            if task[1] == 'sent':
-                await message.answer('上一张已经作为 Telegram 图片发出啦。要重新生成就说「再画一张」。')
-            else:
-                await send_image(message, task[0])
-            return
-        if task and image_refinement(text):
-            await send_image(message, task[0] + '。进一步要求：' + text)
-            return
-        if image_followup(text):
-            await message.answer('我这边没有待发送的图片任务。请直接说「画一个……」，我会调用图片功能。')
-            return
-        uid=message.from_user.id
-        async with locks.setdefault(uid,asyncio.Lock()):
-            history=await store.history(uid,settings.max_context_messages,settings.max_context_chars)
-            memories=await store.memories(uid,settings.memory_limit)
-            try:
-                await message.bot.send_chat_action(message.chat.id,'typing')
-                previous,remaining=await store.character_state(uid)
-                mood,remaining=next_mood(text,previous,remaining)
-                answer=await brain.chat(history,memories,text,mood)
-                await store.set_character_state(uid,mood,remaining)
-                await store.add_exchange(uid,text,answer,settings.max_context_messages)
-                for offset in range(0,len(answer),3800):
-                    await message.answer(answer[offset:offset+3800])
-                should_extract = (await store.exchange_count(uid)) % 4 == 0 or any(w in text for w in ('记住', '我喜欢', '我讨厌', '以后请'))
-                if should_extract:
-                    try:
-                        facts=await brain.extract_memory(text,answer,memories)
-                        if facts: await store.save_memories(uid,facts,settings.memory_limit)
-                    except Exception:
-                        log.exception('memory extraction failed')
-            except Exception:
-                log.exception('chat failed')
-                await message.answer('主人，接口暂时出问题了……等一下再试嘛。')
-    return router
-
-async def main():
-    logging.basicConfig(level=logging.INFO)
-    settings=Settings()
-    if not settings.allowed_ids: raise RuntimeError('ALLOWED_USER_IDS must not be empty')
-    store=Storage(settings.database_path)
-    await store.init()
-    persona=Path('personas/gptchan.md').read_text(encoding='utf-8')
-    brain=Brain(settings.openai_api_key,settings.text_model,settings.image_model,persona)
-    bot=Bot(settings.telegram_bot_token)
-    dp=Dispatcher()
-    dp.include_router(build_router(settings,store,brain))
-    try:
-        await bot.delete_webhook(drop_pending_updates=False)
-        await dp.start_polling(bot)
-    finally:
-        await bot.session.close()
-
-if __name__=='__main__':
+if __name__ == '__main__':
     asyncio.run(main())

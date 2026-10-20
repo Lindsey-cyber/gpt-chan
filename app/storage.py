@@ -1,4 +1,5 @@
 import aiosqlite
+import sqlite3
 from pathlib import Path
 
 class Storage:
@@ -7,9 +8,16 @@ class Storage:
 
     async def init(self):
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        backup = Path(self.path + '.pre-reliability.bak')
+        if Path(self.path).is_file() and not backup.exists():
+            with sqlite3.connect(self.path) as source, sqlite3.connect(backup) as target:
+                source.backup(target)
         async with aiosqlite.connect(self.path) as db:
             await db.executescript("""
                 PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS user_counters (user_id INTEGER PRIMARY KEY, exchanges INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS image_requests (user_id INTEGER NOT NULL, created_at REAL NOT NULL);
+                CREATE INDEX IF NOT EXISTS idx_image_requests_user ON image_requests(user_id,created_at);
                 CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
@@ -28,6 +36,7 @@ class Storage:
                 CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id,id);
                 CREATE TABLE IF NOT EXISTS character_state (user_id INTEGER PRIMARY KEY, mood TEXT NOT NULL DEFAULT 'steady', remaining INTEGER NOT NULL DEFAULT 0);\n                CREATE TABLE IF NOT EXISTS image_tasks (user_id INTEGER PRIMARY KEY, prompt TEXT NOT NULL, status TEXT NOT NULL, updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
             """)
+            await db.execute("UPDATE image_tasks SET status='interrupted' WHERE status='generating'")
             await db.commit()
 
     async def history(self, uid: int, max_messages: int, max_chars: int):
@@ -43,6 +52,7 @@ class Storage:
 
     async def add_exchange(self, uid: int, question: str, answer: str, max_messages: int):
         async with aiosqlite.connect(self.path) as db:
+            await db.execute('INSERT INTO user_counters(user_id,exchanges) VALUES(?,1) ON CONFLICT(user_id) DO UPDATE SET exchanges=exchanges+1', (uid,))
             await db.executemany('INSERT INTO messages(user_id,role,content) VALUES(?,?,?)',[(uid,'user',question),(uid,'assistant',answer)])
             await db.execute('DELETE FROM messages WHERE user_id=? AND id NOT IN (SELECT id FROM messages WHERE user_id=? ORDER BY id DESC LIMIT ?)',(uid,uid,max_messages))
             await db.commit()
@@ -98,3 +108,23 @@ class Storage:
         async with aiosqlite.connect(self.path) as db:
             await db.execute('INSERT INTO image_tasks(user_id,prompt,status) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET prompt=excluded.prompt,status=excluded.status,updated_at=CURRENT_TIMESTAMP',(uid,prompt,status))
             await db.commit()
+
+
+    async def should_extract(self, uid):
+        async with aiosqlite.connect(self.path) as db:
+            row = await (await db.execute('SELECT exchanges FROM user_counters WHERE user_id=?', (uid,))).fetchone()
+        return bool(row and row[0] % 4 == 0)
+
+    async def reserve_image(self, uid, hourly_limit, cooldown):
+        import time
+        now = time.time()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute('BEGIN IMMEDIATE')
+            row = await (await db.execute('SELECT COUNT(*),MAX(created_at) FROM image_requests WHERE user_id=? AND created_at>?', (uid, now-3600))).fetchone()
+            if row[0] >= hourly_limit or (row[1] is not None and now-row[1] < cooldown):
+                await db.rollback()
+                return False
+            await db.execute('DELETE FROM image_requests WHERE created_at<?', (now-3600,))
+            await db.execute('INSERT INTO image_requests(user_id,created_at) VALUES(?,?)', (uid, now))
+            await db.commit()
+            return True
