@@ -29,8 +29,8 @@ def image_refinement(text: str) -> bool:
     return bool(re.search(r'(精致|细致|细节|更好看|好看一点|可爱一点|写实|二次元|半身|全身|Q版|高清|换个风格|再画|重画|重新画|再来一张|颜色|表情|背景|发型|服装|构图|改一下|调整一下)', t)) and len(t) <= 110
 
 def portrait_prompt(text: str) -> str:
-    if re.search(r'(你自己|自己的|你的|白龙娘|白龙姬|GPT娘|你本人)', text):
-        return '精致二次元插画，白龙少女GPT娘的自画像，银白长发，清澈蓝眼睛，两只精巧的白色龙角，白银黑蓝配色，细腻光影，高质量人物绘制。用户要求：' + text
+    if re.search(r'(你自己|自己的|你的|白龙娘|白龙姬|GPT娘|你本人|自画像)', text):
+        return ('画出同一个固定角色 GPT娘·白龙姬。精致日系二次元人物插画，清冷可爱、自然灵动的少女，银白色柔顺长发，清澈冰蓝眼睛，两枚白色小龙角，白银黑蓝配色的精致改良龙纹服装，优雅细节、干净的线稿、细腻光影、自然面部比例，柔和但有层次的配色。人物长相和服装设计尽量保持一致。不要文字、不要水印、不要无关人物。直接绘制最终成图，不要输出绘图说明。用户的具体构图和风格要求优先：' + text)
     return text
 
 def next_mood(text: str, previous: str, remaining: int) -> tuple[str, int]:
@@ -121,7 +121,8 @@ def build_router(settings: Settings, store: Storage, brain: Brain) -> Router:
         if text.startswith('/'): return
         if len(text)>8000:
             await message.answer('这段太长了，主人分几次发嘛。');return
-        if requested_image(text):
+        if requested_image(text) or bool(re.search(r'(给我看看你长什么样|画给我看|画出来给我看|想看你的样子|画张你的照片)', text)):
+
             await send_image(message, text)
             return
         task = await store.image_task(message.from_user.id)
