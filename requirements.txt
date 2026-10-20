@@ -1,5 +1,6 @@
-aiogram>=3.13,<4
-openai>=1.90,<3
-aiosqlite>=0.20,<1
-pydantic-settings>=2.6,<3
-pytest>=8,<10
+aiogram==3.31.0
+openai==2.54.0
+aiosqlite==0.22.1
+pydantic-settings==2.16.1
+Pillow==12.2.0
+pytest==9.1.1
