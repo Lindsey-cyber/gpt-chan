@@ -90,13 +90,32 @@ def build_router(settings: Settings, store: Storage, brain: Brain) -> Router:
         await store.forget(message.from_user.id,None if arg[1]=='all' else int(arg[1]))
         await message.answer('已经按你的要求删除了。')
 
+    @router.message(Command('setref'))
+    async def set_reference_help(message: Message):
+        if permitted(message):
+            await message.answer('把白龙姬的正式立绘作为照片发给我，并在照片说明里写 /setref。保存一次就够了。')
+
+    @router.message(F.photo)
+    async def reference_photo(message: Message):
+        if not permitted(message): return
+        if not (message.caption or '').strip().startswith('/setref'): return
+        target = Path(settings.database_path).parent / 'gptchan_reference.jpg'
+        try:
+            await message.bot.download(message.photo[-1], destination=target)
+            await message.answer('收到啦。这张就是本龙的固定形象，以后画自画像会优先参考它。')
+        except Exception:
+            log.exception('reference image save failed')
+            await message.answer('立绘保存失败了，稍后再试一次。')
+
     async def send_image(message: Message, prompt: str):
         uid = message.from_user.id
         async with locks.setdefault(uid, asyncio.Lock()):
             try:
                 await message.bot.send_chat_action(message.chat.id,'upload_photo')
                 await store.set_image_task(uid, prompt, 'generating')
-                data = await brain.image(portrait_prompt(prompt))
+                ref_path = Path(settings.database_path).parent / 'gptchan_reference.jpg'
+                use_ref = bool(re.search(r'(你|自己|自画像|白龙娘|白龙姬|GPT娘)', prompt))
+                data = await brain.image(portrait_prompt(prompt), str(ref_path) if use_ref and ref_path.is_file() else None)
                 await message.answer_photo(BufferedInputFile(data,'gptchan.png'),caption='画好啦。要改哪里，直接告诉我就行。')
                 await store.set_image_task(uid, prompt, 'sent')
             except Exception:
