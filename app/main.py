@@ -21,12 +21,16 @@ def next_mood(text: str, previous: str, remaining: int) -> tuple[str, int]:
         return 'focused', 3
     if any(x in text for x in ('难过','好累','焦虑','伤心','崩溃','不开心')):
         return 'caring', 3
+    if any(x in text for x in ('摸摸头','摸头','揉揉头','抱抱')):
+        return 'soft-shy', 2
     if any(x in text for x in ('你好可爱','你真可爱','夸夸你','你好棒','你真棒','喜欢你')):
         return 'bashful-proud', 3
     if any(x in text for x in ('你输了','你输啦','比一比','挑战你')):
         return 'competitive-playful', 2
     if any(x in text for x in ('我成功了','我做到了','好消息')):
         return 'celebratory', 2
+    if any(x in text for x in ('报错','代码','怎么修','解释一下','原理','教程')):
+        return 'focused', 1
     if remaining > 1:
         return previous, remaining - 1
     return 'steady', 0
@@ -46,7 +50,7 @@ def build_router(settings: Settings, store: Storage, brain: Brain) -> Router:
     @router.message(CommandStart())
     async def start(message: Message):
         if permitted(message):
-            await message.answer('哼，主人终于来了？本龙娘才没有等你呢。想聊什么？')
+            await message.answer('主人来啦。今天想聊什么？')
 
     @router.message(Command('new'))
     async def new(message: Message):
