@@ -24,6 +24,15 @@ def requested_image(text: str) -> bool:
 def image_followup(text: str) -> bool:
     return bool(re.search(r'(画图|图片|图|画)呢[？?！!]*$|(图片|图)(在哪里|在哪|怎么还没)', text.strip()))
 
+def image_refinement(text: str) -> bool:
+    t = text.strip()
+    return bool(re.search(r'(精致|细致|细节|更好看|好看一点|可爱一点|写实|二次元|半身|全身|Q版|高清|换个风格|再画|重画|重新画|再来一张|颜色|表情|背景|发型|服装|构图|改一下|调整一下)', t)) and len(t) <= 110
+
+def portrait_prompt(text: str) -> str:
+    if re.search(r'(你自己|自己的|你的|白龙娘|白龙姬|GPT娘|你本人)', text):
+        return '精致二次元插画，白龙少女GPT娘的自画像，银白长发，清澈蓝眼睛，两只精巧的白色龙角，白银黑蓝配色，细腻光影，高质量人物绘制。用户要求：' + text
+    return text
+
 def next_mood(text: str, previous: str, remaining: int) -> tuple[str, int]:
     if any(x in text for x in ('别傲娇','认真一点','别撒娇','严肃一点')):
         return 'focused', 3
@@ -86,9 +95,12 @@ def build_router(settings: Settings, store: Storage, brain: Brain) -> Router:
         async with locks.setdefault(uid, asyncio.Lock()):
             try:
                 await message.bot.send_chat_action(message.chat.id,'upload_photo')
-                data = await brain.image(prompt)
-                await message.answer_photo(BufferedInputFile(data,'gptchan.png'),caption='画好了，主人。怎么样，本龙娘的审美不错吧？')
+                await store.set_image_task(uid, prompt, 'generating')
+                data = await brain.image(portrait_prompt(prompt))
+                await message.answer_photo(BufferedInputFile(data,'gptchan.png'),caption='画好啦。要改哪里，直接告诉我就行。')
+                await store.set_image_task(uid, prompt, 'sent')
             except Exception:
+                await store.set_image_task(uid, prompt, 'failed')
                 log.exception('image generation failed')
                 await message.answer('图片没生成成功，主人稍后再试吧。')
 
@@ -112,8 +124,18 @@ def build_router(settings: Settings, store: Storage, brain: Brain) -> Router:
         if requested_image(text):
             await send_image(message, text)
             return
+        task = await store.image_task(message.from_user.id)
+        if task and image_followup(text):
+            if task[1] == 'sent':
+                await message.answer('上一张已经作为 Telegram 图片发出啦。要重新生成就说「再画一张」。')
+            else:
+                await send_image(message, task[0])
+            return
+        if task and image_refinement(text):
+            await send_image(message, task[0] + '。进一步要求：' + text)
+            return
         if image_followup(text):
-            await message.answer('如果刚才没收到真正的图片，那就是没有生成成功。请再发一次画图要求，我会直接发送图片，不会编造链接。')
+            await message.answer('我这边没有待发送的图片任务。请直接说「画一个……」，我会调用图片功能。')
             return
         uid=message.from_user.id
         async with locks.setdefault(uid,asyncio.Lock()):
