@@ -25,7 +25,7 @@ class Storage:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(user_id,fact)
                 );
-                CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id,id);
+                CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id,id);\n                CREATE TABLE IF NOT EXISTS character_state (user_id INTEGER PRIMARY KEY, mood TEXT NOT NULL DEFAULT 'steady', remaining INTEGER NOT NULL DEFAULT 0);
             """)
             await db.commit()
 
@@ -48,7 +48,7 @@ class Storage:
 
     async def clear_history(self, uid: int):
         async with aiosqlite.connect(self.path) as db:
-            await db.execute('DELETE FROM messages WHERE user_id=?',(uid,))
+            await db.execute('DELETE FROM messages WHERE user_id=?',(uid,))\n            await db.execute('DELETE FROM character_state WHERE user_id=?',(uid,))
             await db.commit()
 
     async def memories(self, uid: int, limit: int):
@@ -71,3 +71,18 @@ class Storage:
             else:
                 await db.execute('DELETE FROM memories WHERE user_id=? AND id=?',(uid,memory_id))
             await db.commit()
+
+    async def character_state(self, uid: int):
+        async with aiosqlite.connect(self.path) as db:
+            row = await (await db.execute('SELECT mood,remaining FROM character_state WHERE user_id=?',(uid,))).fetchone()
+        return row if row else ('steady',0)
+
+    async def set_character_state(self, uid: int, mood: str, remaining: int):
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute('INSERT INTO character_state(user_id,mood,remaining) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET mood=excluded.mood,remaining=excluded.remaining',(uid,mood,max(0,remaining)))
+            await db.commit()
+
+    async def exchange_count(self, uid: int) -> int:
+        async with aiosqlite.connect(self.path) as db:
+            row = await (await db.execute("SELECT COUNT(*) FROM messages WHERE user_id=? AND role='user'",(uid,))).fetchone()
+        return row[0]
