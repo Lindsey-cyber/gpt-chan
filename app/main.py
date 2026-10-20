@@ -16,6 +16,21 @@ log = logging.getLogger(__name__)
 def requested_image(text: str) -> bool:
     return bool(re.search(r'(?:帮我|给我|请|现在)?(?:画|绘制|生成|做)(?:一张|一幅|个)?(?:图片|图|插画|头像|壁纸)|(?:画一张|画一幅|画个)|(?:生图)', text))
 
+def next_mood(text: str, previous: str, remaining: int) -> tuple[str, int]:
+    if any(x in text for x in ('别傲娇','认真一点','别撒娇','严肃一点')):
+        return 'focused', 3
+    if any(x in text for x in ('难过','好累','焦虑','伤心','崩溃','不开心')):
+        return 'caring', 3
+    if any(x in text for x in ('你好可爱','你真可爱','夸夸你','你好棒','你真棒','喜欢你')):
+        return 'bashful-proud', 3
+    if any(x in text for x in ('你输了','你输啦','比一比','挑战你')):
+        return 'competitive-playful', 2
+    if any(x in text for x in ('我成功了','我做到了','好消息')):
+        return 'celebratory', 2
+    if remaining > 1:
+        return previous, remaining - 1
+    return 'steady', 0
+
 def build_router(settings: Settings, store: Storage, brain: Brain) -> Router:
     router = Router()
     locks: dict[int, asyncio.Lock] = {}
@@ -91,11 +106,14 @@ def build_router(settings: Settings, store: Storage, brain: Brain) -> Router:
             memories=await store.memories(uid,settings.memory_limit)
             try:
                 await message.bot.send_chat_action(message.chat.id,'typing')
-                answer=await brain.chat(history,memories,text)
+                previous,remaining=await store.character_state(uid)
+                mood,remaining=next_mood(text,previous,remaining)
+                answer=await brain.chat(history,memories,text,mood)
+                await store.set_character_state(uid,mood,remaining)
                 await store.add_exchange(uid,text,answer,settings.max_context_messages)
                 for offset in range(0,len(answer),3800):
                     await message.answer(answer[offset:offset+3800])
-                should_extract = len(history) % 8 >= 6 or any(w in text for w in ('记住', '我喜欢', '我讨厌', '以后请'))
+                should_extract = (await store.exchange_count(uid)) % 4 == 0 or any(w in text for w in ('记住', '我喜欢', '我讨厌', '以后请'))
                 if should_extract:
                     try:
                         facts=await brain.extract_memory(text,answer,memories)
