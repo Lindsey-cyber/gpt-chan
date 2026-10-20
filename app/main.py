@@ -109,7 +109,16 @@ def build_router(settings: Settings, store: Storage, brain: Brain) -> Router:
             log.exception('reference image save failed')
             await message.answer('立绘保存失败了，稍后再试一次。')
 
-    @router.message(F.text.regexp(r'^(存下来了吗|保存了吗|参考图保存了吗|立绘保存了吗|设定图保存了吗)[？?！! ]*
+    @router.message(F.text.in_({'存下来了吗', '保存了吗', '参考图保存了吗', '立绘保存了吗', '设定图保存了吗'}))
+    async def reference_status(message: Message):
+        if not permitted(message): return
+        target = Path(settings.database_path).parent / 'gptchan_reference.jpg'
+        if target.is_file() and target.stat().st_size > 0:
+            await message.answer('保存好了！我的正式立绘还在，画自画像时会用它作参考。')
+        else:
+            await message.answer('还没保存成功。把立绘作为照片发给我，照片说明写 /setref 就好。')
+
+    async def send_image(message: Message, prompt: str):
         uid = message.from_user.id
         async with locks.setdefault(uid, asyncio.Lock()):
             try:
