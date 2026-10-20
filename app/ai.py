@@ -1,6 +1,7 @@
 import base64
 import json
 import re
+from pathlib import Path
 from openai import AsyncOpenAI
 
 class Brain:
@@ -35,6 +36,10 @@ class Brain:
         except (ValueError,TypeError,AttributeError):
             return []
 
-    async def image(self, prompt: str):
-        result=await self.client.images.generate(model=self.image_model, prompt=prompt, size='1024x1024', n=1)
+    async def image(self, prompt: str, reference_path: str | None = None):
+        if reference_path and Path(reference_path).is_file():
+            with open(reference_path, 'rb') as reference:
+                result = await self.client.images.edit(model=self.image_model, image=reference, prompt=('参考输入的角色立绘，保持同一角色的面部特征、龙角、发型、龙翼和龙尾；按下列要求绘制新的完整插画，而非直接复述描述：' + prompt), size='1024x1024', n=1)
+        else:
+            result = await self.client.images.generate(model=self.image_model, prompt=prompt, size='1024x1024', n=1)
         return base64.b64decode(result.data[0].b64_json)
