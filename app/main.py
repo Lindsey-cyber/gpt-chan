@@ -125,6 +125,9 @@ def build_router(settings: Settings, store: Storage, brain: Brain) -> Router:
             await send_image(message, text)
             return
         task = await store.image_task(message.from_user.id)
+        if task and any(phrase in text for phrase in ('继续出图', '开始出图', '出图吧', '直接出图', '继续画', '开始画', '就按这个画', '确认生成')):
+            await send_image(message, task[0])
+            return
         if task and image_followup(text):
             if task[1] == 'sent':
                 await message.answer('上一张已经作为 Telegram 图片发出啦。要重新生成就说「再画一张」。')
