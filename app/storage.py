@@ -49,7 +49,8 @@ class Storage:
 
     async def clear_history(self, uid: int):
         async with aiosqlite.connect(self.path) as db:
-            await db.execute('DELETE FROM messages WHERE user_id=?',(uid,))\n            await db.execute('DELETE FROM character_state WHERE user_id=?',(uid,))
+            await db.execute('DELETE FROM messages WHERE user_id=?',(uid,))
+            await db.execute('DELETE FROM character_state WHERE user_id=?',(uid,))
             await db.commit()
 
     async def memories(self, uid: int, limit: int):
