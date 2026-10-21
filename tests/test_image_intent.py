@@ -74,7 +74,7 @@ async def feed(bot, dp, text, uid=1, number=1, **kwargs):
 def test_tool_schema_and_context():
     async def case():
         brain = Brain('fake', 'gpt-4.1-mini', 'gpt-image-1-mini', '角色')
-        response = NS(output=[NS(type='function_call', name='generate_image', arguments='{"prompt":"白龙姬精致肖像", "self_portrait":true}')], output_text='这是提示词，不应发送')
+        response = NS(output=[NS(type='function_call', name='generate_image', arguments='{"prompt":"白龙姬精致肖像", "self_portrait":true, "nsfw":false}')], output_text='这是提示词，不应发送')
         with patch.object(brain.client.responses, 'create', AsyncMock(return_value=response)) as create:
             answer = await brain.chat([{'role':'user','content':'自画像'}], [], '精致一点', image_task=('原图','sent'))
             assert answer == ImageRequest('白龙姬精致肖像', True)

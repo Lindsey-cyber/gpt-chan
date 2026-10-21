@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from typing import Optional
 
 import httpx
@@ -28,8 +29,8 @@ CHARACTER_NEGATIVE = (
     "blurry, child, loli, underage, baby, toddler"
 )
 
-# NovelAI V5 Full（支持 NSFW）
-MODEL = "nai-diffusion-4-5-full"  # 若账号已有 V5 Full，可改为 nai-diffusion-5-full
+# Keep the configured V4.5 model; never substitute another model automatically.
+MODEL = "nai-diffusion-4-5-full"
 TOTAL_TIMEOUT_SECONDS = 180.0
 
 
@@ -81,6 +82,10 @@ async def generate(
         raise ValueError("NovelAI token missing or invalid (expect pst-...)")
 
     full_prompt = (CHARACTER_PREFIX if self_portrait else '') + prompt.strip()
+    if seed is None:
+        seed = secrets.randbelow(2**32)
+    if type(seed) is not int or not 0 <= seed < 2**32:
+        raise ValueError('Seed must be an unsigned 32-bit integer')
 
     payload = {
         "input": full_prompt,
@@ -96,6 +101,21 @@ async def generate(
             "ucPreset": 0,
             "qualityToggle": True,
             "negative_prompt": CHARACTER_NEGATIVE,
+            # V4/V4.5 use structured conditioning, documented by the provider:
+            # https://image.novelai.net/docs/doc.json (image.V4ConditionInput)
+            "v4_prompt": {
+                "caption": {"base_caption": full_prompt, "char_captions": []},
+                "use_coords": False,
+                "use_order": True,
+            },
+            "v4_negative_prompt": {
+                "caption": {"base_caption": CHARACTER_NEGATIVE, "char_captions": []},
+                "use_coords": False,
+                "use_order": True,
+                "legacy_uc": False,
+            },
+            "image_format": "png",
+            "seed": seed,
             "sm": False,
             "sm_dyn": False,
             "dynamic_thresholding": False,
@@ -105,9 +125,6 @@ async def generate(
             "legacy_v3_extend": False,
         },
     }
-    if seed is not None:
-        payload["parameters"]["seed"] = seed
-
     try:
         # This deadline includes the complete response and off-thread validation.
         async with asyncio.timeout(TOTAL_TIMEOUT_SECONDS):

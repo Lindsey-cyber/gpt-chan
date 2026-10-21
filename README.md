@@ -63,6 +63,18 @@ The optional NovelAI backend uses its own 832×1216 dimensions and model setting
 It requires `NOVELAI_TOKEN`; fixed character tags are added only for self portraits.
 Backend selection does not automatically add a stronger content-rating prompt.
 
+Routing requires explicit boolean `nsfw` and `self_portrait` tool arguments;
+missing or malformed flags are rejected instead of defaulting to a backend.
+`nsfw=false` selects OpenAI and `nsfw=true` selects NovelAI. Missing NovelAI
+configuration is rejected before reserving an image attempt, preserving the previous
+task/cache. Provider rejection never falls back to the other provider. Self portraits
+use the saved visual reference only on OpenAI; NovelAI uses fixed text character tags.
+NovelAI V4.5 requests include structured positive/negative conditioning, explicit PNG
+format and a fresh seed unless a seed was supplied. Each task persists its route and
+identity flags for follow-up planning across restarts. Natural-language classification
+still depends on the configured text model; these routing tests do not prove that every
+possible phrasing will be classified correctly.
+
 Authorized messages are serialized per user. Image generation has one shared
 slot. Persistent attempt limits default to 12 per user per hour, with a 15-second
 cooldown; failed attempts also consume the local limit.
