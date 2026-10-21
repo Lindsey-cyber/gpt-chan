@@ -85,6 +85,7 @@ def test_profile_probe_runs_once_and_checks_both_profiles(tmp_path):
         await profile_probe(brain,tmp_path)
         await profile_probe(brain,tmp_path)
         assert brain.chat.call_count==7
+        assert brain.chat.call_args.kwargs['mood']=='attentive'
         assert [c.kwargs['persona'] for c in brain.chat.call_args_list]==['bailongji','xiaobai','xiaobai','xiaobai','xiaobai','bailongji','bailongji']
         assert json.loads(next(tmp_path.glob('profile-probe-*.json')).read_text())['status']=='passed'
     asyncio.run(case())
