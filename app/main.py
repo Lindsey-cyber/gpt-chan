@@ -188,27 +188,62 @@ def build_router(settings, store, brain, serial=None, companion=None):
 
     async def send_image(message, request, original):
         uid = message.from_user.id
-        prompt = (PORTRAIT if request.self_portrait else '') + request.prompt
+        # NSFW 走 NovelAI 时不用 OpenAI 的中文 PORTRAIT 前缀（NovelAI 用英文标签）
+        if request.nsfw:
+            prompt = request.prompt
+        else:
+            prompt = (PORTRAIT if request.self_portrait else '') + request.prompt
+
         if not await store.reserve_image(uid, settings.image_hourly_limit, settings.image_cooldown_seconds):
             await message.answer('画得有点密啦，稍等一会儿再来。')
             return
+
         await store.set_image_task(uid, prompt, 'generating')
         try:
             async with image_slots:
                 await message.bot.send_chat_action(message.chat.id, 'upload_photo')
-                ref = str(reference_path(settings)) if request.self_portrait else None
-                data = await brain.image(prompt, ref, quality=settings.image_quality)
+                if request.nsfw:
+                    if not settings.novelai_token:
+                        await store.set_image_task(uid, prompt, 'failed')
+                        await message.answer('主人……小白现在还没法画那么亲密的图，需要先配置好专用画板（NovelAI）。')
+                        return
+                    data = await brain.image(prompt, nsfw=True)
+                else:
+                    ref = str(reference_path(settings)) if request.self_portrait else None
+                    data = await brain.image(prompt, ref, quality=settings.image_quality, nsfw=False)
+
                 cached = Path(settings.database_path).parent / f'image_{uid}.png'
                 temp = cached.with_suffix('.tmp')
                 temp.write_bytes(data)
                 temp.replace(cached)
+
             await store.set_image_task(uid, prompt, 'generated')
-            await send_cached(message, (prompt, 'generated'))
-            await store.add_exchange(uid, original, '[已生成图片；是否发送成功以图片任务状态为准]', settings.max_context_messages)
+            caption = '画好啦，主人♥' if request.nsfw else '画好啦，主人♡'
+            try:
+                await message.answer_photo(
+                    FSInputFile(cached),
+                    caption=caption,
+                )
+                await store.set_image_task(uid, prompt, 'sent')
+            except Exception as exc:
+                report_error('image_delivery_failed', exc)
+                await store.set_image_task(uid, prompt, 'delivery_failed')
+                await message.answer('图片已生成，但发送失败。说「图片呢」可以重发，不会重新画。')
+
+            # 把图片语义写回上下文，保证后续聊天连贯
+            context_note = (
+                f'[已生成并发送图片｜nsfw={request.nsfw}｜self_portrait={request.self_portrait}｜'
+                f'内容概要：{request.prompt[:400]}]'
+            )
+            await store.add_exchange(uid, original, context_note, settings.max_context_messages)
         except Exception as exc:
             await store.set_image_task(uid, prompt, 'failed')
             report_error('image_generation_failed', exc)
-            await message.answer(error_message(exc,image=True))
+            # NovelAI 专用错误也可以友好一点
+            msg = error_message(exc, image=True)
+            if 'NovelAI' in type(exc).__name__ or 'novelai' in str(exc).lower() or 'Anlas' in str(exc):
+                msg = '主人……这次亲密的画没画成（额度或接口问题）。小白没有自动重试，你想再试一次就直接说。'
+            await message.answer(msg)
 
     @router.message(Command('draw'))
     async def draw(message):
@@ -275,8 +310,13 @@ async def main():
     await store.init()
     companion = CompanionStore(settings.database_path)
     await companion.init()
-    brain = Brain(settings.openai_api_key, settings.text_model, settings.image_model,
-                  (ROOT / 'personas/gptchan.md').read_text(encoding='utf-8'))
+    brain = Brain(
+                settings.openai_api_key,
+                settings.text_model,
+                settings.image_model,
+                profile_prompt('bailongji'),
+                novelai_token=settings.novelai_token,
+            )
     bot = Bot(settings.telegram_bot_token)
     dp = Dispatcher()
     serial = UserSerial(settings,companion)
