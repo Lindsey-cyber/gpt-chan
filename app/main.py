@@ -15,7 +15,9 @@ from app.api_errors import error_details, error_message
 from app.config import Settings
 from app.companion import Companion, CompanionStore, local_day
 from app.mood import next_mood
-from app.personas import PROFILES, resolve_profile
+from app.personas import PROFILES, resolve_profile, profile_prompt
+from app.captions import image_caption
+from app.tool_errors import ToolProtocolError
 from app.storage import Storage
 
 log = logging.getLogger(__name__)
@@ -28,9 +30,9 @@ PORTRAIT = ('GPT娘·白龙姬，同一位成年白龙少女。以参考三视�
 def report_error(label, exc):
     # Only allowlisted structured metadata: never error bodies or messages.
     detail = error_details(exc)
-    log.error('%s type=%s status=%s request_id=%s code=%s api_type=%s param=%s moderation_stage=%s',
+    log.error('%s type=%s status=%s request_id=%s code=%s api_type=%s param=%s moderation_stage=%s local_reason=%s',
         label,type(exc).__name__,getattr(exc,'status_code',None),getattr(exc,'request_id',None),
-        detail['code'],detail['api_type'],detail['param'],detail['moderation_stage'])
+        detail['code'],detail['api_type'],detail['param'],detail['moderation_stage'],detail['local_reason'])
 
 class UserSerial(BaseMiddleware):
     def __init__(self, settings, companion=None):
@@ -168,23 +170,30 @@ def build_router(settings, store, brain, serial=None, companion=None):
         if permitted(message):
             await message.answer('正式立绘已保存。' if reference_path(settings).is_file() else '暂时没有可用立绘。')
 
-    async def send_cached(message, task):
+    async def send_cached(message, task, caption=None):
         uid = message.from_user.id
         cached = Path(settings.database_path).parent / f'image_{uid}.png'
         if task and task[1] in ('generated', 'delivery_failed') and cached.is_file():
             try:
-                await message.answer_photo(FSInputFile(cached), caption='画好啦，主人♡')
-                await store.set_image_task(uid, task[0], 'sent')
+                await message.answer_photo(FSInputFile(cached),caption=caption or await image_caption(store,uid,resend=True))
             except Exception as exc:
-                report_error('image_delivery_failed', exc)
-                await store.set_image_task(uid, task[0], 'delivery_failed')
+                report_error('image_delivery_failed',exc)
+                await store.set_image_task(uid,task[0],'delivery_failed')
                 await message.answer('图片已生成，但发送失败。说「图片呢」可以重发，不会重新画。')
-            return
-        status = task[1] if task else None
-        await message.answer({'sent': '上一张已经发送啦。要再画一张可以直接告诉我。',
-            'interrupted': '上次绘图被重启打断，结果无法确认。需要重画的话请明确告诉我。',
-            'failed': '上次没有成功；需要重画的话请明确告诉我。',
-            'generating': '上一张还在生成。'}.get(status, '目前没有待发送的图片。'))
+                return False
+            try:
+                await store.set_image_task(uid,task[0],'sent')
+            except Exception as exc:
+                # Telegram acknowledged delivery; persistence failure is not a send failure.
+                report_error('image_state_save_failed',exc)
+            if caption is None:
+                try:
+                    await store.add_assistant(uid,'[上一张图片已从缓存重新发送；没有重新生成]',settings.max_context_messages)
+                except Exception as exc:
+                    report_error('image_history_save_failed',exc)
+            return True
+        await message.answer('主人，目前没有可重发的缓存图片；这次没有重新画。')
+        return False
 
     async def send_image(message, request, original):
         uid = message.from_user.id
@@ -217,33 +226,37 @@ def build_router(settings, store, brain, serial=None, companion=None):
                 temp.write_bytes(data)
                 temp.replace(cached)
 
-            await store.set_image_task(uid, prompt, 'generated')
-            caption = '画好啦，主人♥' if request.nsfw else '画好啦，主人♡'
-            try:
-                await message.answer_photo(
-                    FSInputFile(cached),
-                    caption=caption,
-                )
-                await store.set_image_task(uid, prompt, 'sent')
-            except Exception as exc:
-                report_error('image_delivery_failed', exc)
-                await store.set_image_task(uid, prompt, 'delivery_failed')
-                await message.answer('图片已生成，但发送失败。说「图片呢」可以重发，不会重新画。')
-
-            # 把图片语义写回上下文，保证后续聊天连贯
-            context_note = (
-                f'[已生成并发送图片｜nsfw={request.nsfw}｜self_portrait={request.self_portrait}｜'
-                f'内容概要：{request.prompt[:400]}]'
-            )
-            await store.add_exchange(uid, original, context_note, settings.max_context_messages)
         except Exception as exc:
             await store.set_image_task(uid, prompt, 'failed')
             report_error('image_generation_failed', exc)
-            # NovelAI 专用错误也可以友好一点
             msg = error_message(exc, image=True)
             if 'NovelAI' in type(exc).__name__ or 'novelai' in str(exc).lower() or 'Anlas' in str(exc):
                 msg = '主人……这次亲密的画没画成（额度或接口问题）。小白没有自动重试，你想再试一次就直接说。'
             await message.answer(msg)
+            return
+
+        # Generation, delivery, and conversation persistence have separate outcomes.
+        try:
+            await store.set_image_task(uid,prompt,'generated')
+            try:
+                caption = await image_caption(store,uid)
+            except Exception as exc:
+                report_error('image_caption_failed',exc)
+                caption = '主人，这张给你♡ 我在旁边陪你一起看。'
+            delivered = await send_cached(message,(prompt,'generated'),caption)
+        except Exception as exc:
+            report_error('image_postprocess_failed',exc)
+            await message.answer('主人，图片已经画好并存着，但发送记录出了点问题。这次没有重新画。')
+            return
+        status_note = '已生成并发送图片' if delivered else '图片已生成，但发送失败，尚未送达'
+        context_note = f'[{status_note}｜nsfw={request.nsfw}｜self_portrait={request.self_portrait}｜绘图要求摘要（非图片实看描述）：{request.prompt[:400]}]'
+        try:
+            await store.add_exchange(uid,original,context_note,settings.max_context_messages)
+        except Exception as exc:
+            report_error('image_history_save_failed',exc)
+            # Do not overwrite a successful delivery as a failed generation.
+            if delivered:
+                await message.answer('主人，图片已经发给你啦，不过这次对话记录没存好；图片不用重画。')
 
     @router.message(Command('draw'))
     async def draw(message):
@@ -270,11 +283,18 @@ def build_router(settings, store, brain, serial=None, companion=None):
                 user = next(u for u in await companion.users() if u['user_id'] == uid)
                 greeting = await companion.greet(uid,local_day(time.time(),user['timezone']))
             answer = await brain.chat(history, memories, text, mood, image_task=task, daily_greeting=greeting and persona == 'xiaobai',persona=persona)
-            if isinstance(answer, ImageRequest):
-                await send_image(message, answer, text)
-                return
-            if isinstance(answer, ImageStatus):
-                await send_cached(message, task)
+            if isinstance(answer,ImageStatus):
+                if task and task[1] in ('generated','delivery_failed'):
+                    await send_cached(message,task)
+                    return
+                # One bounded re-evaluation with the status tool disabled. This can
+                # answer ordinary chat or resolve an actual revision into a new image.
+                answer = await brain.chat(history,memories,text,mood,image_task=task,persona=persona,status_checked=True)
+                if isinstance(answer,ImageStatus):
+                    raise ToolProtocolError('repeated_status')
+            if isinstance(answer,ImageRequest):
+                await store.set_character_state(uid,mood,remaining,persona)
+                await send_image(message,answer,text)
                 return
             for offset in range(0, len(answer), 3800):
                 await message.answer(answer[offset:offset+3800])
