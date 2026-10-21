@@ -8,13 +8,16 @@ class Storage:
 
     async def init(self):
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        backup = Path(self.path + '.pre-reliability.bak')
-        if Path(self.path).is_file() and not backup.exists():
-            with sqlite3.connect(self.path) as source, sqlite3.connect(backup) as target:
-                source.backup(target)
+        for suffix in ('.pre-reliability.bak', '.pre-companion.bak'):
+            backup = Path(self.path + suffix)
+            if Path(self.path).is_file() and not backup.exists():
+                with sqlite3.connect(self.path) as source, sqlite3.connect(backup) as target:
+                    source.backup(target)
         async with aiosqlite.connect(self.path) as db:
             await db.executescript("""
                 PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS persona_choices (user_id INTEGER PRIMARY KEY, persona TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS persona_moods (user_id INTEGER NOT NULL, persona TEXT NOT NULL, mood TEXT NOT NULL, remaining INTEGER NOT NULL, PRIMARY KEY(user_id,persona));
                 CREATE TABLE IF NOT EXISTS user_counters (user_id INTEGER PRIMARY KEY, exchanges INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS image_requests (user_id INTEGER NOT NULL, created_at REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS idx_image_requests_user ON image_requests(user_id,created_at);
@@ -61,6 +64,7 @@ class Storage:
         async with aiosqlite.connect(self.path) as db:
             await db.execute('DELETE FROM messages WHERE user_id=?',(uid,))
             await db.execute('DELETE FROM character_state WHERE user_id=?',(uid,))
+            await db.execute('DELETE FROM persona_moods WHERE user_id=?',(uid,))
             await db.execute('DELETE FROM image_tasks WHERE user_id=?',(uid,))
             await db.commit()
 
@@ -85,12 +89,21 @@ class Storage:
                 await db.execute('DELETE FROM memories WHERE user_id=? AND id=?',(uid,memory_id))
             await db.commit()
 
-    async def character_state(self, uid: int):
+    async def character_state(self, uid: int, persona="bailongji"):
+        if persona != "bailongji":
+            async with aiosqlite.connect(self.path) as db:
+                row = await (await db.execute("SELECT mood,remaining FROM persona_moods WHERE user_id=? AND persona=?",(uid,persona))).fetchone()
+            return row if row else ('steady',0)
         async with aiosqlite.connect(self.path) as db:
             row = await (await db.execute('SELECT mood,remaining FROM character_state WHERE user_id=?',(uid,))).fetchone()
         return row if row else ('steady',0)
 
-    async def set_character_state(self, uid: int, mood: str, remaining: int):
+    async def set_character_state(self, uid: int, mood: str, remaining: int, persona="bailongji"):
+        if persona != "bailongji":
+            async with aiosqlite.connect(self.path) as db:
+                await db.execute("INSERT INTO persona_moods(user_id,persona,mood,remaining) VALUES(?,?,?,?) ON CONFLICT(user_id,persona) DO UPDATE SET mood=excluded.mood,remaining=excluded.remaining", (uid,persona,mood,max(0,remaining)))
+                await db.commit()
+            return
         async with aiosqlite.connect(self.path) as db:
             await db.execute('INSERT INTO character_state(user_id,mood,remaining) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET mood=excluded.mood,remaining=excluded.remaining',(uid,mood,max(0,remaining)))
             await db.commit()
@@ -128,3 +141,23 @@ class Storage:
             await db.execute('INSERT INTO image_requests(user_id,created_at) VALUES(?,?)', (uid, now))
             await db.commit()
             return True
+
+    async def add_assistant(self, uid, text, max_messages):
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("INSERT INTO messages(user_id,role,content) VALUES(?,'assistant',?)", (uid,text))
+            await db.execute('DELETE FROM messages WHERE user_id=? AND id NOT IN (SELECT id FROM messages WHERE user_id=? ORDER BY id DESC LIMIT ?)', (uid,uid,max_messages))
+            await db.commit()
+
+    async def selected_persona(self, uid):
+        from app.personas import PROFILES
+        async with aiosqlite.connect(self.path) as db:
+            row = await (await db.execute('SELECT persona FROM persona_choices WHERE user_id=?',(uid,))).fetchone()
+        return row[0] if row and row[0] in PROFILES else 'bailongji'
+
+    async def select_persona(self, uid, persona):
+        from app.personas import PROFILES
+        if persona not in PROFILES:
+            raise ValueError('Unknown persona')
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute('INSERT INTO persona_choices(user_id,persona) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET persona=excluded.persona',(uid,persona))
+            await db.commit()

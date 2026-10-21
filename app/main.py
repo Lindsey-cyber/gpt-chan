@@ -1,5 +1,8 @@
 import asyncio
 import logging
+import time
+from contextlib import suppress
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pathlib import Path
 from uuid import uuid4
 
@@ -10,7 +13,9 @@ from openai import APIStatusError, APITimeoutError, RateLimitError
 
 from app.ai import Brain, ImageRequest, ImageStatus
 from app.config import Settings
+from app.companion import Companion, CompanionStore, local_day
 from app.mood import next_mood
+from app.personas import PROFILES, resolve_profile
 from app.storage import Storage
 
 log = logging.getLogger(__name__)
@@ -35,12 +40,18 @@ def error_message(exc):
     return '这次没能完成，稍后再试一次吧。'
 
 class UserSerial(BaseMiddleware):
-    def __init__(self, settings):
+    def __init__(self, settings, companion=None):
         self.settings, self.locks = settings, {}
+        self.companion = companion
 
     async def __call__(self, handler, event, data):
         if event.from_user and event.from_user.id in self.settings.allowed_ids:
             async with self.locks.setdefault(event.from_user.id, asyncio.Lock()):
+                if self.companion and event.chat.type == 'private':
+                    text = event.text or ''
+                    affection = any(w in text for w in ('摸头','摸摸','抱抱','你好棒','你真棒','可爱','喜欢你','喂你','给你零食')) and not text.startswith('/')
+                    await self.companion.activity(event.from_user.id,event.chat.id,time.time(),
+                        self.settings.proactive_timezone,False,affection)
                 return await handler(event, data)
         return await handler(event, data)
 
@@ -61,9 +72,9 @@ async def save_reference(bot, photo, target):
     finally:
         temp.unlink(missing_ok=True)
 
-def build_router(settings, store, brain):
+def build_router(settings, store, brain, serial=None, companion=None):
     router = Router()
-    router.message.outer_middleware(UserSerial(settings))
+    router.message.outer_middleware(serial or UserSerial(settings, companion))
     image_slots = asyncio.Semaphore(1)
 
     def permitted(message):
@@ -77,7 +88,50 @@ def build_router(settings, store, brain):
     @router.message(CommandStart())
     async def start(message):
         if permitted(message):
-            await message.answer('在呀，今天想聊什么？')
+            key = await store.selected_persona(message.from_user.id)
+            await message.answer('主人！小白在这里呀～先摸摸角嘛♡' if key == 'xiaobai' else '主人，白龙姬在这里呀～今天想一起做什么？')
+
+    @router.message(Command('persona'))
+    async def persona_settings(message):
+        if not permitted(message): return
+        uid = message.from_user.id
+        arg = (message.text or '').split(maxsplit=1)
+        if len(arg) == 1:
+            key = await store.selected_persona(uid)
+            await message.answer(f"当前人格：{PROFILES[key][0]}。\n/persona bailongji — 原来的天才白龙姬\n/persona xiaobai — Grok稿的小龙宠小白\n也可以用 /persona 白龙姬 或 /persona 小白。聊天、记忆和参考立绘都会保留。")
+            return
+        key = resolve_profile(arg[1])
+        if not key:
+            await message.answer('主人，选 /persona 白龙姬 或 /persona 小白 就好啦。')
+            return
+        await store.select_persona(uid,key)
+        await message.answer('主人！小白来啦♡ 先摸摸角嘛，怎么可以只换完就走！' if key == 'xiaobai' else '主人，白龙姬回来啦！这回也要让你见识本天才的本事～')
+
+    @router.message(Command('proactive'))
+    async def proactive_settings(message):
+        if not permitted(message) or companion is None: return
+        uid = message.from_user.id
+        arg = (message.text or '').split(maxsplit=1)
+        action = arg[1].strip().lower() if len(arg) == 2 else 'status'
+        if action in ('on','off'):
+            await companion.configure(uid,enabled=action == 'on')
+            await message.answer('好嘛，我会自己来找主人玩♡' if action == 'on' else '知道啦，我乖乖等主人来找。主动消息关好啦。')
+        else:
+            user = next(u for u in await companion.users() if u['user_id'] == uid)
+            await message.answer(f"主动找主人：{'开着' if user['enabled'] else '关着'}；时区 {user['timezone']}；每天最多{settings.proactive_daily_limit}条，通常间隔至少两小时。\n夜里23点到早上8点安静，只有深夜刚收到你的消息才可能提醒休息。\n/proactive on 或 /proactive off；/timezone Asia/Shanghai 可以改时区。")
+
+    @router.message(Command('timezone'))
+    async def timezone_settings(message):
+        if not permitted(message) or companion is None: return
+        arg = (message.text or '').split(maxsplit=1)
+        try:
+            if len(arg) != 2: raise ValueError()
+            ZoneInfo(arg[1].strip())
+        except (ValueError, ZoneInfoNotFoundError):
+            await message.answer('主人，给我一个时区名字嘛，例如 /timezone Asia/Shanghai 或 /timezone Asia/Tokyo。')
+            return
+        await companion.configure(message.from_user.id,timezone=arg[1].strip())
+        await message.answer('记好啦，之后按主人这个时区来找你♡')
 
     @router.message(Command('new'))
     async def new(message):
@@ -179,10 +233,15 @@ def build_router(settings, store, brain):
             history = await store.history(uid, settings.max_context_messages, settings.max_context_chars)
             memories = await store.memories(uid, settings.memory_limit)
             task = await store.image_task(uid)
-            previous, remaining = await store.character_state(uid)
+            persona = await store.selected_persona(uid)
+            previous, remaining = await store.character_state(uid,persona)
             mood, remaining = next_mood(text, previous, remaining)
             await message.bot.send_chat_action(message.chat.id, 'typing')
-            answer = await brain.chat(history, memories, text, mood, image_task=task)
+            greeting = False
+            if companion and persona == 'xiaobai':
+                user = next(u for u in await companion.users() if u['user_id'] == uid)
+                greeting = await companion.greet(uid,local_day(time.time(),user['timezone']))
+            answer = await brain.chat(history, memories, text, mood, image_task=task, daily_greeting=greeting and persona == 'xiaobai',persona=persona)
             if isinstance(answer, ImageRequest):
                 await send_image(message, answer, text)
                 return
@@ -191,7 +250,7 @@ def build_router(settings, store, brain):
                 return
             for offset in range(0, len(answer), 3800):
                 await message.answer(answer[offset:offset+3800])
-            await store.set_character_state(uid, mood, remaining)
+            await store.set_character_state(uid,mood,remaining,persona)
             await store.add_exchange(uid, text, answer, settings.max_context_messages)
             if await store.should_extract(uid) or any(w in text for w in ('记住', '我喜欢', '我讨厌', '以后请')):
                 try:
@@ -221,11 +280,15 @@ async def main():
     if not settings.allowed_ids: raise RuntimeError('ALLOWED_USER_IDS must not be empty')
     store = Storage(settings.database_path)
     await store.init()
+    companion = CompanionStore(settings.database_path)
+    await companion.init()
     brain = Brain(settings.openai_api_key, settings.text_model, settings.image_model,
                   (ROOT / 'personas/gptchan.md').read_text(encoding='utf-8'))
     bot = Bot(settings.telegram_bot_token)
     dp = Dispatcher()
-    dp.include_router(build_router(settings, store, brain))
+    serial = UserSerial(settings,companion)
+    dp.include_router(build_router(settings,store,brain,serial,companion))
+    proactive_task = None
     try:
         await bot.get_me()
         await bot.delete_webhook(drop_pending_updates=False)
@@ -240,8 +303,19 @@ async def main():
                 await asyncio.wait_for(persona_probe(brain, Path(settings.database_path).parent), timeout=120)
             except asyncio.TimeoutError:
                 log.warning('persona_probe_timeout; polling will start without repeating the probe')
+            from app.profile_probe import profile_probe
+            try:
+                await asyncio.wait_for(profile_probe(brain,Path(settings.database_path).parent),timeout=90)
+            except asyncio.TimeoutError:
+                log.warning('profile_probe_timeout; polling will start')
+        if settings.proactive_enabled:
+            proactive_task = asyncio.create_task(Companion(settings,companion,store,brain,bot,serial.locks).run())
         await dp.start_polling(bot)
     finally:
+        if proactive_task:
+            proactive_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await proactive_task
         await brain.client.close()
         await bot.session.close()
 
