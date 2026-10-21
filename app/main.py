@@ -126,7 +126,7 @@ def build_router(settings, store, brain):
         cached = Path(settings.database_path).parent / f'image_{uid}.png'
         if task and task[1] in ('generated', 'delivery_failed') and cached.is_file():
             try:
-                await message.answer_photo(FSInputFile(cached), caption='画好啦。')
+                await message.answer_photo(FSInputFile(cached), caption='画好啦，主人♡')
                 await store.set_image_task(uid, task[0], 'sent')
             except Exception as exc:
                 report_error('image_delivery_failed', exc)
