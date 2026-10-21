@@ -35,30 +35,33 @@ def error_details(exc):
 
 
 def error_message(exc, *, image=False):
+    # Text requests have bounded SDK retries; images deliberately have none.
+    retry_notice = '我没有自动重试' if image else '本次请求已停止，不会继续重试'
+    repeat_notice = '我没有自动重复这次请求' if image else '本次请求已停止，不会继续重试'
     if isinstance(exc,ToolProtocolError):
         return '主人，我刚才没把这句话处理好，这条还没有完成。再说一次好不好？'
     detail = error_details(exc)
     code, status = detail['code'], getattr(exc,'status_code',None)
     subject = '绘图请求' if image else '请求'
     if code in ('moderation_blocked','content_policy_violation'):
-        return '主人，这次请求没有通过接口的内容审核。我没有自动重试；改一下要求后再试吧。'
+        return f'主人，这次请求没有通过接口的内容审核。{retry_notice}；改一下要求后再试吧。'
     if code in QUOTA or detail['api_type']=='insufficient_quota':
         return '主人，接口返回余额或费用额度不足，需要检查账户余额和消费上限；重复请求暂时没用。'
     if isinstance(exc,RateLimitError) or status==429:
-        return '主人，接口暂时限速了，稍等一会儿再试。我没有自动重复这次请求。'
+        return f'主人，接口暂时限速了，稍等一会儿再试。{repeat_notice}。'
     if isinstance(exc,APITimeoutError):
-        return '这次等待超时了，结果暂时无法确认。我没有自动重试；需要的话请明确说再试一次。'
+        return f'这次等待超时了，结果暂时无法确认。{retry_notice}；需要的话请明确说再试一次。'
     if isinstance(exc,APIStatusError):
         if status==401:
-            return '主人，接口凭据验证失败，需要检查API密钥；这次没有自动重试。'
+            return f'主人，接口凭据验证失败，需要检查API密钥；{retry_notice}。'
         if status==403:
-            return '主人，接口拒绝了访问权限，需要检查账户或模型权限；这次没有自动重试。'
+            return f'主人，接口拒绝了访问权限，需要检查账户或模型权限；{retry_notice}。'
         if status==404 or code=='model_not_found':
-            return '主人，接口找不到当前模型或资源，需要检查配置；这次没有自动重试。'
+            return f'主人，接口找不到当前模型或资源，需要检查配置；{retry_notice}。'
         if status==400:
             if detail['param'] not in ('missing','other'):
-                return f"主人，这次{subject}的参数被接口拒绝了（{detail['param']}），需要检查请求格式；我没有自动重试。"
-            return f'主人，这次{subject}被接口拒绝了（HTTP 400），尚无足够信息确认具体原因。我没有自动重试。'
+                return f"主人，这次{subject}的参数被接口拒绝了（{detail['param']}），需要检查请求格式；{retry_notice}。"
+            return f'主人，这次{subject}被接口拒绝了（HTTP 400），尚无足够信息确认具体原因。{retry_notice}。'
         if status and status>=500:
-            return '主人，接口服务暂时出错了，稍后再试吧。这次结果未确认，我没有自动重复请求。'
+            return f'主人，接口服务暂时出错了，稍后再试吧。这次结果未确认，{repeat_notice}。'
     return '这次没能完成，稍后再试一次吧。'

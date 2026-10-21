@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     image_model: str = 'gpt-image-2.5-sunburst'
     novelai_token: str = ''
     database_path: str = '/app/data/gptchan.sqlite3'
-    max_context_messages: int = 24
-    max_context_chars: int = 32000
+    max_context_messages: int = Field(default=24, ge=2, le=200)
+    max_context_chars: int = Field(default=32000, ge=1000, le=200000)
     memory_limit: int = Field(default=12, ge=1, le=100)
     run_startup_probe: bool = False
     run_persona_probe: bool = False
