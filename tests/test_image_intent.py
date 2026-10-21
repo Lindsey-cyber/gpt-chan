@@ -259,7 +259,7 @@ def test_new_serializes_with_image(tmp_path):
 
 def test_probe_runs_once_without_telegram_delivery(tmp_path):
     async def case():
-        from app.probe import startup_probe
+        from app.probe import startup_probe, probe_marker
         brain=NS(text_model='text',image_model='gpt-image-1-mini',
             chat=AsyncMock(side_effect=['你好',ImageRequest('肖像',True),ImageRequest('精致肖像',True),ImageRequest('继续肖像',True)]),
             image=AsyncMock(return_value=png()))
@@ -267,7 +267,7 @@ def test_probe_runs_once_without_telegram_delivery(tmp_path):
         await startup_probe(brain,tmp_path,Path('assets/gptchan_reference.png'))
         assert brain.chat.call_count==4
         assert brain.image.call_count==1
-        assert 'passed' in (tmp_path/'api-probe-v1.json').read_text()
+        assert 'passed' in probe_marker(tmp_path,brain.image_model,'high').read_text()
     run(case())
 
 
@@ -284,3 +284,30 @@ def test_startup_initializes_and_enters_polling(tmp_path):
             brain.client.close.assert_awaited_once()
         assert Path(cfg.database_path).is_file()
     run(case())
+
+
+def test_upgraded_default_image_contract(tmp_path):
+    async def case():
+        cfg=settings(tmp_path)
+        assert cfg.image_model == 'gpt-image-2.5-sunburst'
+        assert cfg.image_quality == 'high'
+        brain=Brain('fake',cfg.text_model,cfg.image_model,'')
+        result=NS(data=[NS(b64_json=base64.b64encode(png()).decode())],usage=None)
+        client=NS(images=NS(edit=AsyncMock(return_value=result)))
+        with patch.object(brain.client,'with_options',return_value=client):
+            await brain.image('肖像',str(reference_path(cfg)),quality=cfg.image_quality)
+        args=client.images.edit.call_args.kwargs
+        assert args['model']=='gpt-image-2.5-sunburst'
+        assert args['quality']=='high'
+        assert args['output_format']=='png'
+        assert args['n']==1
+        assert 'input_fidelity' not in args
+        await brain.client.close()
+    run(case())
+
+
+def test_probe_marker_tracks_model_and_quality(tmp_path):
+    from app.probe import probe_marker
+    assert probe_marker(tmp_path,'old','medium') != probe_marker(tmp_path,'new','high')
+    assert probe_marker(tmp_path,'new','medium') != probe_marker(tmp_path,'new','high')
+    assert probe_marker(tmp_path,'new','high') == probe_marker(tmp_path,'new','high')

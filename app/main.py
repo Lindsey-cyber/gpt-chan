@@ -233,7 +233,7 @@ async def main():
                  len(settings.allowed_ids), settings.text_model, settings.image_model, reference_path(settings).is_file())
         if settings.run_startup_probe:
             from app.probe import startup_probe
-            await startup_probe(brain, Path(settings.database_path).parent, reference_path(settings))
+            await startup_probe(brain, Path(settings.database_path).parent, reference_path(settings), quality=settings.image_quality)
         await dp.start_polling(bot)
     finally:
         await brain.client.close()

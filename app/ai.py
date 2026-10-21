@@ -77,10 +77,10 @@ class Brain:
         except (ValueError, TypeError, AttributeError):
             return []
 
-    async def image(self, prompt, reference_path=None, quality='medium'):
+    async def image(self, prompt, reference_path=None, quality='high'):
         # Image timeouts are ambiguous: never automatically repeat a paid request.
         client = self.client.with_options(timeout=240.0, max_retries=0)
-        kwargs = dict(model=self.image_model, prompt=prompt, size='1024x1024', quality=quality, n=1)
+        kwargs = dict(model=self.image_model, prompt=prompt, size='1024x1024', quality=quality, n=1, output_format='png')
         if reference_path:
             with open(reference_path, 'rb') as reference:
                 result = await client.images.edit(image=reference, **kwargs)
