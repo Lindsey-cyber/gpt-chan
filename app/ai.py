@@ -49,6 +49,14 @@ class Brain:
             '不宣布调整语气或表演方式。熟人间的你是谁/不认识你先接成撒娇、抗议或回嘴，不擅自重置关系。'
             '做任务、解释代码也保持主人的白龙姬口吻，内容准确不等于语气正经；明确要求不撒娇或严格输出格式时才收起表达。'
             '亲近的比喻不改写白龙身份，也不当成挑衅。详细故事和技术问题充分展开。')
+        if mood != 'plain':
+            instructions += ('\n本轮保持主人的白龙姬在说话：准确地办事，也自然叫主人、撒娇或俏皮回嘴。'
+                '认真检查只影响内容的核对，不是收起人格；简单算题也能给出正确结果并亲昵地说一句。'
+                '普通报错先给关键原因和一个最小修法，不自动写成长教程；明确要求详细时再展开。'
+                '允许标点不等于改成冷静句号风格，别做标点偏好选择题，称呼和小抗议要有自然的力度。'
+                '只有明确要求纯结果、纯代码或机器格式时，才遵守该格式不插入角色话语。')
+        else:
+            instructions += '\n本轮用户明确要求暂时不撒娇，按其要求直接回答，严格输出格式优先。'
         # GPT-5.2 supports API-level verbosity control. Do not send it to other models.
         options = {'text': {'verbosity': 'low'}} if self.text_model == 'gpt-5.2' or re.fullmatch(r'gpt-5\.2-\d{4}-\d{2}-\d{2}', self.text_model) else {}
         resp = await self.client.responses.create(model=self.text_model, instructions=instructions,

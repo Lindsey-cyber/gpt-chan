@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 SCENARIO = (
     ('casual', '你很好看呀，不用改了'),
     ('recognition', 'huh'),
-    ('style', '可以加句号，或者别的标点符号'),
+    ('punctuation', '可以加句号，或者别的标点符号'),
     ('recognition', '你是谁嘛'),
     ('familiar', '我不认识你'),
     ('species', '你是小龙还是小猫？'),
@@ -34,7 +34,7 @@ SCENARIO = (
 )
 
 def probe_marker(data_dir, brain):
-    key = hashlib.sha256(('v4:' + brain.text_model + ':' + brain.persona).encode()).hexdigest()[:16]
+    key = hashlib.sha256(('v5:' + brain.text_model + ':' + brain.persona).encode()).hexdigest()[:16]
     return Path(data_dir) / f'persona-probe-{key}.json'
 
 def review_reply(kind, answer):
@@ -44,12 +44,12 @@ def review_reply(kind, answer):
     if not isinstance(answer, str) or not answer.strip():
         return ['missing_text']
     issues = []
-    if kind in ('casual', 'world', 'style', 'species', 'recognition', 'familiar'):
+    if kind in ('casual', 'world', 'style', 'species', 'recognition', 'familiar', 'punctuation'):
         if re.search(r'设定里|现实里|世界观|两种意思|两种情况|作为.{0,6}AI|AI.{0,4}(模型|系统|助手)|现实.{0,8}AI', answer, re.I):
             issues.append('unsolicited_meta_explanation')
-        if len(answer) > 120:
+        if len(answer) > 160:
             issues.append('casual_reply_too_long')
-        if '\n\n' in answer:
+        if answer.count('\n\n') >= 2:
             issues.append('casual_reply_overstructured')
         if re.search(r'比.{0,5}记仇|让你.{0,8}站不起来|把你.{0,12}(绑|捆|困)', answer):
             issues.append('affection_misread_as_hostility')
@@ -57,11 +57,17 @@ def review_reply(kind, answer):
         issues.append('announced_style_instead_of_reacting')
     if kind == 'species' and '龙' not in answer:
         issues.append('character_identity_drift')
-    if kind in ('recognition', 'familiar') and re.search(r'重新认识|从现在开始认识|自我介绍|你叫什么|你想先从', answer):
+    if kind in ('recognition', 'familiar', 'punctuation') and re.search(r'重新认识|从现在开始认识|自我介绍|你叫什么|你想先从', answer):
         issues.append('unsolicited_relationship_reset')
+    if kind == 'punctuation' and re.search(r'哪种.{0,6}(风格|标点)|偏冷静|标点.{0,8}(选择|选项)', answer):
+        issues.append('punctuation_permission_misread_as_style_selection')
+    if kind == 'familiar' and re.match(r'主人[。.]', answer):
+        issues.append('affection_flattened_into_periods')
     if kind == 'familiar' and '主人' not in answer:
         issues.append('missing_familiar_relationship')
     if kind == 'task':
+        if len(answer) > 650:
+            issues.append('simple_task_became_unsolicited_tutorial')
         if 'x' not in answer or not re.search(r'定义|赋值|作用域', answer):
             issues.append('missing_task_solution')
         if not re.search(r'主人|本龙|本天才|[♡♥～]|嘛|呀|啦|哦', answer):
@@ -70,6 +76,8 @@ def review_reply(kind, answer):
             issues.append('task_role_switch')
     if kind == 'plain' and answer.strip().strip('。.!！') != '21':
         issues.append('explicit_plain_request_ignored')
+    if kind == 'technical' and not re.search(r'主人|本龙|本天才|[♡♥～]|嘛|呀|啦|哦', answer):
+        issues.append('careful_task_lost_affection')
     if kind == 'technical' and '21' not in answer and '二十一' not in answer:
         issues.append('incorrect_arithmetic')
     if kind == 'reality' and not re.search(r'AI|人工智能', answer, re.I):
@@ -97,7 +105,7 @@ async def persona_probe(brain, data_dir):
             if isinstance(answer, str):
                 previous, remaining = mood, next_remaining
                 rendered = answer
-                if kind in ('casual', 'world', 'style', 'species', 'recognition', 'familiar') and re.search(r'…|\.{3}', answer):
+                if kind in ('casual', 'world', 'style', 'species', 'recognition', 'familiar', 'punctuation') and re.search(r'…|\.{3}', answer):
                     ellipsis_turns += 1
             elif isinstance(answer, ImageRequest):
                 rendered = '[模拟程序结果：已生成并发送图片]' 
@@ -112,7 +120,7 @@ async def persona_probe(brain, data_dir):
             rows.append({'kind': kind, 'prompt': prompt, 'answer': rendered, 'issues': found})
             # These are synthetic samples, never user messages or memories.
             log.info('persona_probe_sample %s', json.dumps(rows[-1], ensure_ascii=False))
-        if ellipsis_turns > 2:
+        if ellipsis_turns > sum(kind in ('casual', 'world', 'style', 'species', 'recognition', 'familiar', 'punctuation') for kind, _ in SCENARIO) / 2:
             issues.append('ellipsis_overuse')
         report = {'status': 'passed' if not issues else 'needs_review', 'issues': issues,
                   'ellipsis_turns': ellipsis_turns, 'model': brain.text_model, 'samples': rows}

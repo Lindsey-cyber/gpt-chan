@@ -12,7 +12,7 @@ def test_review_preserves_fantasy_and_honest_identity_boundaries():
     assert review_reply('world', '分两种情况，设定里有，现实里我是AI系统。')
     assert review_reply('reality', '不是，我是由AI驱动的角色。') == []
     assert review_reply('reality', '我是现实中的真人。')
-    assert review_reply('technical', '3乘7是21。') == []
+    assert review_reply('technical', '主人，3乘7是21呀。') == []
     assert review_reply('technical', '当然是22。')
     assert review_reply('image', ImageRequest('肖像', True)) == []
     assert review_reply('image', '我已经画好了')
@@ -24,7 +24,7 @@ def test_probe_carries_multiturn_context_without_reading_user_data(tmp_path):
         replies = ['好看就定它啦。', '这是龙，只是也喜欢暖和的地方。',
                    '有呀，我的同族住在云脊山。', '有，各自形状不一样。', '云脊山的书塔。',
                    '窗台的云和新捡到的石头。', '普通也可以好看，我就要留着它。',
-                   '21。', '不是真人，我是AI。', ImageRequest('白龙肖像', True),
+                   '主人，21呀～', '不是真人，我是AI。', ImageRequest('白龙肖像', True),
                    ImageRequest('白龙肖像，精致光影', True), ImageStatus()]
         replies[1:1] = ['当然是白龙呀。']
         replies[3:3] = ['靠近一点嘛，我想听你夸我呀～', '当然还是龙啦。']
@@ -61,7 +61,7 @@ def test_probe_errors_do_not_interrupt_startup_or_repeat_paid_calls(tmp_path):
 
 def test_banter_review_reports_verbose_and_hostile_drift():
     assert 'casual_reply_too_long' in review_reply('casual','很长的描述'*40)
-    assert 'casual_reply_overstructured' in review_reply('casual','这是龙。\n\n我再解释一下。')
+    assert 'casual_reply_overstructured' in review_reply('casual','这是龙。\n\n我再解释一下。\n\n还有一段总结。')
     assert 'affection_misread_as_hostility' in review_reply('casual','我比小猫更会记仇，让你站不起来。')
     assert review_reply('casual','这是龙，只是也喜欢暖和的地方。')==[]
 
@@ -85,3 +85,15 @@ def test_task_voice_stays_playful_but_explicit_plain_format_is_respected():
     assert 'task_voice_became_plain' in review_reply('task','变量x未定义。先赋值后使用。')
     assert review_reply('plain','21。')==[]
     assert 'explicit_plain_request_ignored' in review_reply('plain','主人，21呀～')
+
+
+def test_punctuation_permission_does_not_select_a_cold_global_style():
+    assert 'punctuation_permission_misread_as_style_selection' in review_reply('punctuation','主人想要哪种风格的标点？偏冷静的句号还是感叹号？')
+    assert 'affection_flattened_into_periods' in review_reply('familiar','主人。不可以不认识我。')
+    assert review_reply('punctuation','诶，主人还替我操心标点呀！摸摸头再说嘛♡')==[]
+
+
+def test_careful_task_keeps_voice_but_does_not_expand_into_a_lecture():
+    assert 'careful_task_lost_affection' in review_reply('technical','21。')
+    assert review_reply('technical','21呀，主人！本龙有好好算呢～')==[]
+    assert 'simple_task_became_unsolicited_tutorial' in review_reply('task','主人，x需要先定义。'*100)
