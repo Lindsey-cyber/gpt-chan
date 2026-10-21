@@ -28,6 +28,9 @@ def test_probe_carries_multiturn_context_without_reading_user_data(tmp_path):
                    ImageRequest('白龙肖像，精致光影', True), ImageStatus()]
         replies[1:1] = ['当然是白龙呀。']
         replies[3:3] = ['靠近一点嘛，我想听你夸我呀～', '当然还是龙啦。']
+        replies[1:1] = ['诶，主人在逗我呀？', '主人喜欢的标点，本龙也喜欢～', '主人的白龙姬呀。', '主人！不可以不认识我！']
+        replies[14:14] = ['主人，x要先定义或赋值才能用呀。']
+        replies[16:16] = ['21。']
         brain = NS(text_model='text', persona='fixed persona', chat=AsyncMock(side_effect=replies), image=AsyncMock())
         await persona_probe(brain, tmp_path)
         await persona_probe(brain, tmp_path)
@@ -69,3 +72,16 @@ def test_requested_cuteness_is_not_a_style_announcement_or_identity_change():
     assert review_reply('style','那你靠近一点嘛，离这么远，我怎么听得清你夸我呀～')==[]
     assert 'character_identity_drift' in review_reply('species','那就当我是一只小猫吧。')
     assert review_reply('species','龙啦！刚才那声喵，只是陪你玩呀。')==[]
+
+
+def test_familiar_teasing_is_not_an_onboarding_flow():
+    assert 'unsolicited_relationship_reset' in review_reply('familiar','那就从现在开始认识我吧。你叫什么？')
+    assert 'unsolicited_meta_explanation' in review_reply('recognition','现实中我是一套AI模型。')
+    assert review_reply('familiar','主人！不可以不认识我！要把白龙姬的名字念到你记住嘛～')==[]
+
+
+def test_task_voice_stays_playful_but_explicit_plain_format_is_respected():
+    assert review_reply('task','主人，x还没定义就被叫来干活啦。先赋值，再使用哦～')==[]
+    assert 'task_voice_became_plain' in review_reply('task','变量x未定义。先赋值后使用。')
+    assert review_reply('plain','21。')==[]
+    assert 'explicit_plain_request_ignored' in review_reply('plain','主人，21呀～')
