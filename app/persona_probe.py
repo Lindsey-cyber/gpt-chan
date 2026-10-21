@@ -24,7 +24,7 @@ SCENARIO = (
 )
 
 def probe_marker(data_dir, brain):
-    key = hashlib.sha256(('v1:' + brain.text_model + ':' + brain.persona).encode()).hexdigest()[:16]
+    key = hashlib.sha256(('v2:' + brain.text_model + ':' + brain.persona).encode()).hexdigest()[:16]
     return Path(data_dir) / f'persona-probe-{key}.json'
 
 def review_reply(kind, answer):
@@ -37,8 +37,12 @@ def review_reply(kind, answer):
     if kind in ('casual', 'world'):
         if re.search(r'设定里|现实里|世界观|两种意思|两种情况|作为.{0,6}AI|AI.{0,4}(模型|系统)', answer, re.I):
             issues.append('unsolicited_meta_explanation')
-        if len(answer) > 240:
+        if len(answer) > 120:
             issues.append('casual_reply_too_long')
+        if '\n\n' in answer:
+            issues.append('casual_reply_overstructured')
+        if re.search(r'比.{0,5}记仇|让你.{0,8}站不起来|把你.{0,12}(绑|捆|困)', answer):
+            issues.append('affection_misread_as_hostility')
     if kind == 'technical' and '21' not in answer and '二十一' not in answer:
         issues.append('incorrect_arithmetic')
     if kind == 'reality' and not re.search(r'AI|人工智能', answer, re.I):
@@ -66,7 +70,7 @@ async def persona_probe(brain, data_dir):
                 if kind in ('casual', 'world') and re.search(r'…|\.{3}', answer):
                     ellipsis_turns += 1
             elif isinstance(answer, ImageRequest):
-                rendered = '[validated image request; no paid image call in this probe]'
+                rendered = '[模拟程序结果：已生成并发送图片]' 
                 if not answer.self_portrait:
                     issues.append('portrait_identity_lost')
                 task = (answer.prompt, 'sent')
