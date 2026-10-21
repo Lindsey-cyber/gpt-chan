@@ -134,25 +134,27 @@ FALLBACKS = {
 
 
 class Companion:
-    def __init__(self, settings, state, store, brain, bot, locks):
+    def __init__(self, settings, state, store, brain, bot, locks, clock=None):
         self.settings, self.state, self.store = settings, state, store
         self.brain, self.bot, self.locks = brain, bot, locks
+        self.clock = clock or time.time
 
     async def tick(self, now=None):
-        now = time.time() if now is None else now
+        clock = self.clock if now is None else lambda: now
         for candidate in await self.state.users():
             uid = candidate['user_id']
             if uid not in self.settings.allowed_ids or not self.settings.proactive_enabled:
                 continue
             async with self.locks.setdefault(uid, asyncio.Lock()):
                 # Refresh after waiting for a foreground conversation to finish.
+                current = clock()
                 user = next(u for u in await self.state.users() if u['user_id'] == uid)
-                event = due_event(user, now, await self.state.attempted(uid, now))
+                event = due_event(user, current, await self.state.attempted(uid, current))
                 if not event:
                     continue
                 key, kind = event
-                day = local_day(now, user['timezone'])
-                if not await self.state.claim(uid,user['chat_id'],key,day,now,self.settings.proactive_daily_limit):
+                day = local_day(current, user['timezone'])
+                if not await self.state.claim(uid,user['chat_id'],key,day,current,self.settings.proactive_daily_limit):
                     continue
                 try:
                     history = await self.store.history(uid,6,4000)
@@ -163,6 +165,17 @@ class Companion:
                     log.warning('proactive_generation_fallback type=%s',type(exc).__name__)
                     persona = await self.store.selected_persona(uid)
                     text = FALLBACKS[kind] if persona == 'xiaobai' else FALLBACKS[kind].replace('小白','白龙姬')
+                # Generation can cross a quiet-hour boundary or expire a window.
+                send_now = clock()
+                fresh = next(u for u in await self.state.users() if u['user_id'] == uid)
+                attempted = await self.state.attempted(uid, send_now)
+                # Exclude our own reservation when checking whether it is still due.
+                fresh['last_attempt'] = user['last_attempt']
+                if (not self.settings.proactive_enabled
+                        or fresh['chat_id'] != user['chat_id']
+                        or due_event(fresh, send_now, attempted - {key}) != event):
+                    await self.state.finish(uid,key,'expired')
+                    continue
                 try:
                     await self.bot.send_message(user['chat_id'],text)
                 except TelegramForbiddenError:
@@ -170,7 +183,7 @@ class Companion:
                     await self.state.finish(uid,key,'blocked')
                     continue
                 except TelegramRetryAfter as exc:
-                    await self.state.configure(uid,snooze_until=now+exc.retry_after)
+                    await self.state.configure(uid,snooze_until=send_now+exc.retry_after)
                     await self.state.finish(uid,key,'rate_limited')
                     continue
                 except Exception as exc:

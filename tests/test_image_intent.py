@@ -160,7 +160,7 @@ def test_generation_failure_and_status_does_not_retry(tmp_path):
         brain.chat.return_value=ImageRequest('云海',False)
         brain.image.side_effect=TimeoutError()
         await feed(bot,dp,'画云海')
-        assert (await store.image_task(1))[1] == 'failed'
+        assert (await store.image_task(1))[1] == 'unknown'
         brain.chat.return_value=ImageStatus()
         await feed(bot,dp,'图片呢',number=2)
         assert brain.image.call_count == 1
