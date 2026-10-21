@@ -234,6 +234,12 @@ async def main():
         if settings.run_startup_probe:
             from app.probe import startup_probe
             await startup_probe(brain, Path(settings.database_path).parent, reference_path(settings), quality=settings.image_quality)
+        if settings.run_persona_probe:
+            from app.persona_probe import persona_probe
+            try:
+                await asyncio.wait_for(persona_probe(brain, Path(settings.database_path).parent), timeout=120)
+            except asyncio.TimeoutError:
+                log.warning('persona_probe_timeout; polling will start without repeating the probe')
         await dp.start_polling(bot)
     finally:
         await brain.client.close()

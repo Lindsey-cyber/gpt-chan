@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     max_context_chars: int = 32000
     memory_limit: int = Field(default=12, ge=1, le=100)
     run_startup_probe: bool = False
+    run_persona_probe: bool = False
     image_quality: Literal['low', 'medium', 'high'] = 'high'
     image_hourly_limit: int = Field(default=12, ge=1, le=100)
     image_cooldown_seconds: int = Field(default=15, ge=0, le=3600)
