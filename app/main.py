@@ -20,6 +20,7 @@ from app.captions import image_caption
 from app.tool_errors import ToolProtocolError
 from app.image_errors import unknown_outcome, UNKNOWN_OUTCOME_MESSAGE
 from app.image_state import ImageState, SENDABLE_STATES, RECOVERABLE_STATES
+from app.image_routing import ImageBackend, image_backend
 from app.telegram_text import answer_text
 from app.storage import Storage
 
@@ -213,8 +214,12 @@ def build_router(settings, store, brain, serial=None, companion=None):
 
     async def send_image(message, request, original):
         uid = message.from_user.id
+        backend = image_backend(request.nsfw)
+        if backend == ImageBackend.NOVELAI and not settings.novelai_token.strip().startswith('pst-'):
+            await message.answer('主人，这次需要 NovelAI 画板，但尚未配置有效凭据。绘图请求没有发送，也没有切换到其他后端。')
+            return
         # NSFW 走 NovelAI 时不用 OpenAI 的中文 PORTRAIT 前缀（NovelAI 用英文标签）
-        if request.nsfw:
+        if backend == ImageBackend.NOVELAI:
             prompt = request.prompt
         else:
             prompt = (PORTRAIT if request.self_portrait else '') + request.prompt
@@ -226,13 +231,10 @@ def build_router(settings, store, brain, serial=None, companion=None):
         await store.set_image_task(uid, prompt, ImageState.GENERATING)
         generation_started = False
         try:
+            await store.set_image_route(uid, request.nsfw, request.self_portrait)
             async with image_slots:
                 await message.bot.send_chat_action(message.chat.id, 'upload_photo')
-                if request.nsfw:
-                    if not settings.novelai_token:
-                        await store.set_image_task(uid, prompt, ImageState.FAILED)
-                        await message.answer('主人……小白现在还没法画那么亲密的图，需要先配置好专用画板（NovelAI）。')
-                        return
+                if backend == ImageBackend.NOVELAI:
                     generation_started = True
                     data = await brain.image(prompt, nsfw=True, self_portrait=request.self_portrait)
                 else:
@@ -306,6 +308,7 @@ def build_router(settings, store, brain, serial=None, companion=None):
             history = await store.history(uid, settings.max_context_messages, settings.max_context_chars)
             memories = await store.memories(uid, settings.memory_limit)
             task = await recover_cached_task(uid, await store.image_task(uid))
+            route = await store.image_route(uid)
             persona = await store.selected_persona(uid)
             previous, remaining = await store.character_state(uid,persona)
             mood, remaining = next_mood(text, previous, remaining)
@@ -314,7 +317,7 @@ def build_router(settings, store, brain, serial=None, companion=None):
             if companion and persona == 'xiaobai':
                 user = next(u for u in await companion.users() if u['user_id'] == uid)
                 greeting = await companion.greet(uid,local_day(time.time(),user['timezone']))
-            answer = await brain.chat(history, memories, text, mood, image_task=task, daily_greeting=greeting and persona == 'xiaobai',persona=persona)
+            answer = await brain.chat(history, memories, text, mood, image_task=task, daily_greeting=greeting and persona == 'xiaobai',persona=persona,image_route=route)
             if isinstance(answer,ImageStatus):
                 if task and task[1] in SENDABLE_STATES:
                     await send_cached(message,task)
@@ -324,7 +327,7 @@ def build_router(settings, store, brain, serial=None, companion=None):
                     return
                 # One bounded re-evaluation with the status tool disabled. This can
                 # answer ordinary chat or resolve an actual revision into a new image.
-                answer = await brain.chat(history,memories,text,mood,image_task=task,persona=persona,status_checked=True)
+                answer = await brain.chat(history,memories,text,mood,image_task=task,persona=persona,status_checked=True,image_route=route)
                 if isinstance(answer,ImageStatus):
                     raise ToolProtocolError('repeated_status')
             if isinstance(answer,ImageRequest):

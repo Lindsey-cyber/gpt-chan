@@ -43,8 +43,9 @@ class Storage:
                 CREATE TABLE IF NOT EXISTS character_state (user_id INTEGER PRIMARY KEY, mood TEXT NOT NULL DEFAULT 'steady', remaining INTEGER NOT NULL DEFAULT 0);\n                CREATE TABLE IF NOT EXISTS image_tasks (user_id INTEGER PRIMARY KEY, prompt TEXT NOT NULL, status TEXT NOT NULL, updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
             """)
             columns = await (await db.execute('PRAGMA table_info(image_tasks)')).fetchall()
-            if 'task_id' not in {column[1] for column in columns}:
-                await db.execute('ALTER TABLE image_tasks ADD COLUMN task_id TEXT')
+            for name, sql_type in (('task_id', 'TEXT'), ('nsfw', 'INTEGER'), ('self_portrait', 'INTEGER')):
+                if name not in {column[1] for column in columns}:
+                    await db.execute(f'ALTER TABLE image_tasks ADD COLUMN {name} {sql_type}')
             await db.execute('UPDATE image_tasks SET status=? WHERE status=?',
                              (ImageState.INTERRUPTED, ImageState.GENERATING))
             await db.commit()
@@ -130,6 +131,8 @@ class Storage:
             await db.execute('''INSERT INTO image_tasks(user_id,prompt,status,task_id) VALUES(?,?,?,?)
                 ON CONFLICT(user_id) DO UPDATE SET prompt=excluded.prompt,status=excluded.status,
                 task_id=CASE WHEN excluded.status='generating' THEN excluded.task_id ELSE image_tasks.task_id END,
+                nsfw=CASE WHEN excluded.status='generating' THEN NULL ELSE image_tasks.nsfw END,
+                self_portrait=CASE WHEN excluded.status='generating' THEN NULL ELSE image_tasks.self_portrait END,
                 updated_at=CURRENT_TIMESTAMP''', (uid,prompt,status,uuid4().hex))
             await db.commit()
 
@@ -137,6 +140,21 @@ class Storage:
         async with aiosqlite.connect(self.path) as db:
             row = await (await db.execute('SELECT task_id FROM image_tasks WHERE user_id=?', (uid,))).fetchone()
         return row[0] if row else None
+
+    async def set_image_route(self, uid: int, nsfw: bool, self_portrait: bool):
+        if type(nsfw) is not bool or type(self_portrait) is not bool:
+            raise ValueError('Image route flags must be booleans')
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute('UPDATE image_tasks SET nsfw=?,self_portrait=? WHERE user_id=?',
+                             (int(nsfw), int(self_portrait), uid))
+            await db.commit()
+
+    async def image_route(self, uid: int):
+        async with aiosqlite.connect(self.path) as db:
+            row = await (await db.execute('SELECT nsfw,self_portrait FROM image_tasks WHERE user_id=?', (uid,))).fetchone()
+        if not row or None in row:
+            return None
+        return {'nsfw': bool(row[0]), 'self_portrait': bool(row[1])}
 
 
     async def should_extract(self, uid):
