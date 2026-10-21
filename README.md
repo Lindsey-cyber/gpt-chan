@@ -51,3 +51,16 @@ Voice v7 treats the owner/white-dragon relationship as the default across casual
 The requested Grok-like inspiration concerns wit, initiative and irreverent friendly banter ([official description](https://help.x.com/en/using-x/about-grok)); the service continues to use its configured OpenAI models, with no xAI account, provider or credentials added.
 
 Voice v7.1 reinforces owner-facing affection for every non-plain mood, including careful task answers. A permission to use punctuation is not a request for a global cold punctuation style. The synthetic check distinguishes that permission from general style requests, checks affectionate arithmetic separately from explicit plain arithmetic, and bounds the simple NameError scenario to a concise useful fix. Casual structural checks now allow two short paragraphs and occasional ellipses, in line with the user's updated expressive preference, while flagging long/three-paragraph exposition or ellipses on most casual turns. These checks remain review aids, not a guarantee of subjective personality quality.
+
+
+### 两套人格切换
+
+默认保留原版白龙姬，不会自动改名。私聊发送：
+
+- `/persona` 查看当前人格和切换方法。
+- `/persona 白龙姬` 或 `/persona bailongji`：原版天才白龙姬。
+- `/persona 小白` 或 `/persona xiaobai`：用户提供的Grok稿小龙宠；`grok`也是别名，不更换底层模型。
+
+选择按授权用户持久保存，重启仍在；两套情绪分别保存，聊天和长期记忆沿用当前用户的记录，切换不清空。`/new`仅清当前用户的短期对话及情绪，保留人格选择与长期记忆。图片生成、模型和固定立绘共用。
+
+主动消息独立控制，默认关闭，切人格不会擅自开关：`/proactive on` 开启，`/proactive off` 关闭，`/proactive` 看状态；`/timezone Asia/Shanghai` 改自己的时区（默认Asia/Tokyo）。只绑定授权用户实际发来的私聊，不猜测chat_id。每天最多4条（配置范围2–5），通常间隔至少两小时；23–8点安静，深夜仅刚收到消息时可提醒休息，不读取在线状态。SQLite先登记发送尝试再调用Telegram，重启不重播不确定结果；被屏蔽自动停发。主动消息仅文本，每次最多220输出token，不调用生图。

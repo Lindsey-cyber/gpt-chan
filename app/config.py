@@ -1,5 +1,6 @@
 from typing import Literal
-from pydantic import Field
+from pydantic import Field, field_validator
+from zoneinfo import ZoneInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -18,6 +19,16 @@ class Settings(BaseSettings):
     image_quality: Literal['low', 'medium', 'high'] = 'high'
     image_hourly_limit: int = Field(default=12, ge=1, le=100)
     image_cooldown_seconds: int = Field(default=15, ge=0, le=3600)
+
+    proactive_enabled: bool = True
+    proactive_timezone: str = 'Asia/Tokyo'
+    proactive_daily_limit: int = Field(default=4, ge=2, le=5)
+
+    @field_validator('proactive_timezone')
+    @classmethod
+    def valid_timezone(cls, value):
+        ZoneInfo(value)
+        return value
 
     @property
     def allowed_ids(self) -> set[int]:
