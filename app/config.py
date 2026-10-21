@@ -8,13 +8,13 @@ class Settings(BaseSettings):
     openai_api_key: str
     allowed_user_ids: str
     text_model: str = 'gpt-4.1-mini'
-    image_model: str = 'gpt-image-1-mini'
+    image_model: str = 'gpt-image-2.5-sunburst'
     database_path: str = '/app/data/gptchan.sqlite3'
     max_context_messages: int = 24
     max_context_chars: int = 32000
     memory_limit: int = Field(default=12, ge=1, le=100)
     run_startup_probe: bool = False
-    image_quality: Literal['low', 'medium', 'high'] = 'medium'
+    image_quality: Literal['low', 'medium', 'high'] = 'high'
     image_hourly_limit: int = Field(default=12, ge=1, le=100)
     image_cooldown_seconds: int = Field(default=15, ge=0, le=3600)
 

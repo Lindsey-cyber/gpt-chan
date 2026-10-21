@@ -4,7 +4,7 @@ Private Telegram character bot: Python 3.12, aiogram, OpenAI Responses + Images 
 
 ## Setup
 
-Copy `.env.example` to `.env`, supply secrets using Railway variables, and set `ALLOWED_USER_IDS` to the two numeric IDs. Never commit secrets. `TEXT_MODEL` and `IMAGE_MODEL` are preserved; defaults remain `gpt-4.1-mini` and `gpt-image-1-mini`. Account access must be verified separately; no automatic model substitutions.
+Copy `.env.example` to `.env`, supply secrets using Railway variables, and set `ALLOWED_USER_IDS` to the two numeric IDs. Never commit secrets. `TEXT_MODEL` and `IMAGE_MODEL` are preserved; defaults remain `gpt-4.1-mini` and `gpt-image-2.5-sunburst`. Account access must be verified separately; no automatic model substitutions.
 
 `python -m pip install -r requirements.txt`, then `python -m app.main`. Docker Compose persists `/app/data`. Railway volume ownership is fixed at container start and the worker runs as `bot`.
 
@@ -18,7 +18,7 @@ The fixed character's supplied three-view image is `assets/gptchan_reference.png
 
 ## Reliability and costs
 
-All authorized updates for a user are serialized, including `/new`; different users have independent locks. Image generation is globally limited to one concurrent request. Persistent limits default to 12 attempts/user/hour and a 15-second cooldown. Attempts, including failures, consume the local limit. One request produces one 1024×1024 image at explicit `medium` quality. Change `IMAGE_QUALITY` to low/medium/high if wanted. No model is changed automatically.
+All authorized updates for a user are serialized, including `/new`; different users have independent locks. Image generation is globally limited to one concurrent request. Persistent limits default to 12 attempts/user/hour and a 15-second cooldown. Attempts, including failures, consume the local limit. One request produces one 1024×1024 image at explicit `high` quality. Change `IMAGE_QUALITY` to low/medium/high if wanted. The image default was upgraded from `gpt-image-1-mini` to `gpt-image-2.5-sunburst` with user authorization; no automatic fallback or substitutions occur. Production `TEXT_MODEL=gpt-5.2` remains unchanged.
 
 Image calls have a 240-second timeout and **no automatic retries** because a timeout can hide a completed paid generation. Text calls have two bounded SDK retries. Rate/quota and access errors get concise messages. Successful images are cached per user before sending; if Telegram fails, “图片呢” uses `image_status` to resend cached bytes without regenerating. Restart marks unfinished generation as interrupted and never silently replays it. Only the latest generated PNG per user is retained.
 
@@ -30,6 +30,6 @@ Before the first storage upgrade, an existing SQLite database is backed up with 
 
 Run `python -m compileall -q app` and `python -m pytest -q`. Tests use real aiogram dispatch with mocked Telegram transport and mocked OpenAI, testing isolation, command/photo routing, image states, cache resend, reference atomicity, API contracts, migration retention, concurrency and startup. GitHub Actions repeats both checks. Docker also runs both before an image can be deployed, so a failed test prevents deployment even if Railway's GitHub check waiting is disabled.
 
-For an authorized real-API deployment probe, set `RUN_STARTUP_PROBE=true`. It runs once per persistent volume, guarded by `api-probe-v1.json`, tests text output and the three image request/refinement/continuation decisions, and performs **one paid reference-image edit**. Result bytes go to `api-probe-portrait.png`. It never sends fabricated incoming Telegram updates or unsolicited chat messages. The marker records attempted/passed/failed; restarts do not incur more probe cost. Logs explicitly distinguish API verification from untested Telegram photo delivery.
+For an authorized real-API deployment probe, set `RUN_STARTUP_PROBE=true`. It runs once per image-model/quality pair on a persistent volume, guarded by a hashed `api-probe-v2-*.json` marker, tests text output and the three image request/refinement/continuation decisions, and performs **one paid reference-image edit**. Result bytes go to `api-probe-portrait.png`. It never sends fabricated incoming Telegram updates or unsolicited chat messages. The marker records attempted/passed/failed; restarts do not incur more probe cost. Logs explicitly distinguish API verification from untested Telegram photo delivery.
 
 A Railway `SUCCESS` label only proves the deployment lifecycle completed. Check `bot_ready`, `Run polling`, and subsequent real `Update ... is handled` logs; verify a real Telegram user receives text and a photo. API probes and mocked tests do not establish real Telegram delivery or subjective visual consistency.
