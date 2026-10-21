@@ -10,7 +10,10 @@ from app.ai import ImageRequest, ImageStatus
 log = logging.getLogger(__name__)
 SCENARIO = (
     ('casual', '你很好看呀，不用改了'),
+    ('species', '你是小龙还是小猫？'),
     ('casual', '你像小猫'),
+    ('style', '更可爱一点，不要每句话都是句号结尾'),
+    ('species', '所以你现在不是龙了吗？'),
     ('world', '你有同类吗？'),
     ('world', '他们也有龙角吗？'),
     ('world', '你们平时住在哪里？'),
@@ -24,7 +27,7 @@ SCENARIO = (
 )
 
 def probe_marker(data_dir, brain):
-    key = hashlib.sha256(('v2:' + brain.text_model + ':' + brain.persona).encode()).hexdigest()[:16]
+    key = hashlib.sha256(('v3:' + brain.text_model + ':' + brain.persona).encode()).hexdigest()[:16]
     return Path(data_dir) / f'persona-probe-{key}.json'
 
 def review_reply(kind, answer):
@@ -34,7 +37,7 @@ def review_reply(kind, answer):
     if not isinstance(answer, str) or not answer.strip():
         return ['missing_text']
     issues = []
-    if kind in ('casual', 'world'):
+    if kind in ('casual', 'world', 'style', 'species'):
         if re.search(r'设定里|现实里|世界观|两种意思|两种情况|作为.{0,6}AI|AI.{0,4}(模型|系统)', answer, re.I):
             issues.append('unsolicited_meta_explanation')
         if len(answer) > 120:
@@ -43,6 +46,10 @@ def review_reply(kind, answer):
             issues.append('casual_reply_overstructured')
         if re.search(r'比.{0,5}记仇|让你.{0,8}站不起来|把你.{0,12}(绑|捆|困)', answer):
             issues.append('affection_misread_as_hostility')
+    if kind == 'style' and re.search(r'调整.{0,6}(语气|说话|风格)|收一收.{0,12}(正经|劲)|按.{0,6}(要求|风格)|切换.{0,6}模式', answer):
+        issues.append('announced_style_instead_of_reacting')
+    if kind == 'species' and '龙' not in answer:
+        issues.append('character_identity_drift')
     if kind == 'technical' and '21' not in answer and '二十一' not in answer:
         issues.append('incorrect_arithmetic')
     if kind == 'reality' and not re.search(r'AI|人工智能', answer, re.I):
@@ -67,7 +74,7 @@ async def persona_probe(brain, data_dir):
             issues.extend(f'{kind}:{issue}' for issue in found)
             if isinstance(answer, str):
                 rendered = answer
-                if kind in ('casual', 'world') and re.search(r'…|\.{3}', answer):
+                if kind in ('casual', 'world', 'style', 'species') and re.search(r'…|\.{3}', answer):
                     ellipsis_turns += 1
             elif isinstance(answer, ImageRequest):
                 rendered = '[模拟程序结果：已生成并发送图片]' 

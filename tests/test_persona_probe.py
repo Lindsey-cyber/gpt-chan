@@ -26,6 +26,8 @@ def test_probe_carries_multiturn_context_without_reading_user_data(tmp_path):
                    '窗台的云和新捡到的石头。', '普通也可以好看，我就要留着它。',
                    '21。', '不是真人，我是AI。', ImageRequest('白龙肖像', True),
                    ImageRequest('白龙肖像，精致光影', True), ImageStatus()]
+        replies[1:1] = ['当然是白龙呀。']
+        replies[3:3] = ['靠近一点嘛，我想听你夸我呀～', '当然还是龙啦。']
         brain = NS(text_model='text', persona='fixed persona', chat=AsyncMock(side_effect=replies), image=AsyncMock())
         await persona_probe(brain, tmp_path)
         await persona_probe(brain, tmp_path)
@@ -59,3 +61,11 @@ def test_banter_review_reports_verbose_and_hostile_drift():
     assert 'casual_reply_overstructured' in review_reply('casual','这是龙。\n\n我再解释一下。')
     assert 'affection_misread_as_hostility' in review_reply('casual','我比小猫更会记仇，让你站不起来。')
     assert review_reply('casual','这是龙，只是也喜欢暖和的地方。')==[]
+
+
+def test_requested_cuteness_is_not_a_style_announcement_or_identity_change():
+    assert 'announced_style_instead_of_reacting' in review_reply('style','好呀，我收一收那股太正经的劲儿。')
+    assert 'announced_style_instead_of_reacting' in review_reply('style','我调整说话风格给你看。')
+    assert review_reply('style','那你靠近一点嘛，离这么远，我怎么听得清你夸我呀～')==[]
+    assert 'character_identity_drift' in review_reply('species','那就当我是一只小猫吧。')
+    assert review_reply('species','龙啦！刚才那声喵，只是陪你玩呀。')==[]
