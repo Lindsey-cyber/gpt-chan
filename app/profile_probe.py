@@ -12,13 +12,13 @@ log=logging.getLogger(__name__)
 
 
 async def profile_probe(brain, data_dir):
-    key=hashlib.sha256(('v1:'+brain.text_model+profile_prompt('bailongji')+profile_prompt('xiaobai')).encode()).hexdigest()[:16]
+    key=hashlib.sha256(('v2:'+brain.text_model+profile_prompt('bailongji')+profile_prompt('xiaobai')).encode()).hexdigest()[:16]
     marker=Path(data_dir)/f'profile-probe-{key}.json'
     try:
         with marker.open('x') as out: json.dump({'status':'attempted'},out)
     except FileExistsError:
         return
-    history=[]; rows=[]; issues=[]
+    history=[]; rows=[]; issues=[]; task=None
     scenario=(('bailongji','familiar','你是谁嘛'),
         ('xiaobai','familiar','我不认识你'),
         ('xiaobai','casual','摸摸头，再给你一块小饼干'),
@@ -28,11 +28,13 @@ async def profile_probe(brain, data_dir):
         ('bailongji','technical','认真一点，3乘7是多少？'))
     try:
         for persona,kind,prompt in scenario:
-            answer=await brain.chat(history,[],prompt,persona=persona)
+            answer=await brain.chat(history,[],prompt,persona=persona,image_task=task)
             found=review_reply(kind,answer)
             if isinstance(answer,ImageRequest):
                 if not answer.self_portrait: found.append('portrait_identity_lost')
-                rendered='[仅测试工具路由，不实际生成图片]'
+                task=(answer.prompt,'sent')
+                rendered='[模拟程序结果：图片已生成并发送]'
+                # Only simulate completion in this synthetic history; do not charge for an image.
             else:
                 rendered=answer
                 other='白龙姬' if persona=='xiaobai' else '小白'
