@@ -8,6 +8,7 @@ from typing import Optional
 
 from openai import AsyncOpenAI
 from app.personas import profile_prompt
+from app.tool_errors import ToolProtocolError
 
 log = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ class Brain:
         self.persona = persona
         self.novelai_token = (novelai_token or '').strip()
 
-    async def chat(self, history, memories, prompt, mood='steady', image_task=None, daily_greeting=False, persona=None):
+    async def chat(self, history, memories, prompt, mood='steady', image_task=None, daily_greeting=False, persona=None, status_checked=False):
         memory_block = '\n'.join('- ' + fact for _, fact in memories) or '（暂无）'
         active_persona = profile_prompt(persona) if persona else self.persona
         instructions = (
@@ -124,6 +125,10 @@ class Brain:
                 + '。使用这套人格的名字、性格和自称；历史中另一人格的回复仅为事实背景，不能把两套人格混成一种。'
             )
 
+        if status_checked:
+            instructions += ('\n程序已经检查过图片状态，image_task就是检查结果。不要再次查询状态。'
+                '现在处理用户本轮真正的意思：要求修改或继续出图就用generate_image；普通聊天直接接话，'
+                '不要拿上一张已经发送之类的进度通知代替聊天，也不要擅自重画历史请求。')
         options = (
             {'text': {'verbosity': 'low'}}
             if self.text_model == 'gpt-5.2' or re.fullmatch(r'gpt-5\.2-\d{4}-\d{2}-\d{2}', self.text_model)
@@ -133,7 +138,7 @@ class Brain:
             model=self.text_model,
             instructions=instructions,
             input=history + [{'role': 'user', 'content': prompt}],
-            tools=[IMAGE_TOOL, STATUS_TOOL],
+            tools=[IMAGE_TOOL] if status_checked else [IMAGE_TOOL, STATUS_TOOL],
             parallel_tool_calls=False,
             max_output_tokens=1600,
             store=False,
@@ -142,22 +147,31 @@ class Brain:
         calls = [x for x in resp.output if x.type == 'function_call']
         if calls:
             if len(calls) != 1:
-                raise ValueError('Multiple tool calls rejected')
+                raise ToolProtocolError('multiple_tool_calls')
             call = calls[0]
-            args = json.loads(call.arguments)
+            try:
+                args = json.loads(call.arguments)
+            except (ValueError, TypeError):
+                raise ToolProtocolError('invalid_json') from None
+            if not isinstance(args,dict):
+                raise ToolProtocolError('invalid_arguments')
             if call.name == 'image_status' and args == {}:
+                if status_checked:
+                    raise ToolProtocolError('repeated_status')
                 return ImageStatus()
             if call.name != 'generate_image':
-                raise ValueError('Invalid tool call')
+                raise ToolProtocolError('invalid_tool')
+            if not {'prompt','self_portrait'} <= set(args):
+                raise ToolProtocolError('invalid_arguments')
             # 兼容旧模型偶尔漏传 nsfw
             if 'nsfw' not in args:
                 args['nsfw'] = False
             if set(args.keys()) - {'prompt', 'self_portrait', 'nsfw'}:
-                raise ValueError('Invalid image arguments')
+                raise ToolProtocolError('invalid_arguments')
             if type(args['self_portrait']) is not bool or type(args['nsfw']) is not bool:
-                raise ValueError('Invalid image arguments')
+                raise ToolProtocolError('invalid_arguments')
             if not isinstance(args['prompt'], str) or not 1 <= len(args['prompt'].strip()) <= 3000:
-                raise ValueError('Invalid image arguments')
+                raise ToolProtocolError('invalid_arguments')
             return ImageRequest(args['prompt'].strip(), args['self_portrait'], args['nsfw'])
 
         answer = (resp.output_text or '').strip()

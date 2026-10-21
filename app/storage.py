@@ -8,7 +8,7 @@ class Storage:
 
     async def init(self):
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        for suffix in ('.pre-reliability.bak', '.pre-companion.bak'):
+        for suffix in ('.pre-reliability.bak', '.pre-companion.bak', '.pre-chatflow.bak'):
             backup = Path(self.path + suffix)
             if Path(self.path).is_file() and not backup.exists():
                 with sqlite3.connect(self.path) as source, sqlite3.connect(backup) as target:
@@ -16,6 +16,7 @@ class Storage:
         async with aiosqlite.connect(self.path) as db:
             await db.executescript("""
                 PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS image_captions (user_id INTEGER PRIMARY KEY, sequence INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS persona_choices (user_id INTEGER PRIMARY KEY, persona TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS persona_moods (user_id INTEGER NOT NULL, persona TEXT NOT NULL, mood TEXT NOT NULL, remaining INTEGER NOT NULL, PRIMARY KEY(user_id,persona));
                 CREATE TABLE IF NOT EXISTS user_counters (user_id INTEGER PRIMARY KEY, exchanges INTEGER NOT NULL DEFAULT 0);
@@ -161,3 +162,12 @@ class Storage:
         async with aiosqlite.connect(self.path) as db:
             await db.execute('INSERT INTO persona_choices(user_id,persona) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET persona=excluded.persona',(uid,persona))
             await db.commit()
+
+    async def next_caption_index(self, uid):
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute('BEGIN IMMEDIATE')
+            row = await (await db.execute('SELECT sequence FROM image_captions WHERE user_id=?',(uid,))).fetchone()
+            index = row[0] if row else 0
+            await db.execute('INSERT INTO image_captions(user_id,sequence) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET sequence=excluded.sequence',(uid,index+1))
+            await db.commit()
+            return index

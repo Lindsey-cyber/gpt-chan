@@ -1,5 +1,6 @@
 """Classify API failures without retaining error messages, prompts, or credentials."""
 from openai import APIStatusError, APITimeoutError, RateLimitError
+from app.tool_errors import ToolProtocolError
 
 CODES = frozenset(('moderation_blocked','content_policy_violation','invalid_image_format',
     'invalid_image','invalid_image_url','image_parse_error','invalid_base64_image',
@@ -28,12 +29,14 @@ def error_details(exc):
         return value if isinstance(value,str) and value in allowed else ('other' if value is not None else 'missing')
     moderation = body.get('moderation_details')
     stage = moderation.get('moderation_stage') if isinstance(moderation,dict) else None
-    return {'code':field('code',CODES),'api_type':field('type',TYPES),
+    return {'local_reason':exc.reason if isinstance(exc,ToolProtocolError) else 'missing', 'code':field('code',CODES),'api_type':field('type',TYPES),
         'param':field('param',PARAMS),
         'moderation_stage':stage if stage in ('input','output','unknown') else 'missing'}
 
 
 def error_message(exc, *, image=False):
+    if isinstance(exc,ToolProtocolError):
+        return '主人，我刚才没把这句话处理好，这条还没有完成。再说一次好不好？'
     detail = error_details(exc)
     code, status = detail['code'], getattr(exc,'status_code',None)
     subject = '绘图请求' if image else '请求'
