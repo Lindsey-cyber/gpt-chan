@@ -311,3 +311,18 @@ def test_probe_marker_tracks_model_and_quality(tmp_path):
     assert probe_marker(tmp_path,'old','medium') != probe_marker(tmp_path,'new','high')
     assert probe_marker(tmp_path,'new','medium') != probe_marker(tmp_path,'new','high')
     assert probe_marker(tmp_path,'new','high') == probe_marker(tmp_path,'new','high')
+
+
+@pytest.mark.parametrize('model,supported', [('gpt-5.2',True),('gpt-5.2-2025-12-11',True),('gpt-4.1-mini',False)])
+def test_low_verbosity_only_sent_to_supported_text_model(model,supported):
+    async def case():
+        brain=Brain('fake',model,'image','persona')
+        response=NS(output=[],output_text='在呀。')
+        with patch.object(brain.client.responses,'create',AsyncMock(return_value=response)) as create:
+            assert await brain.chat([],[],'在吗')=='在呀。'
+            args=create.call_args.kwargs
+            assert ('text' in args)==supported
+            if supported: assert args['text']=={'verbosity':'low'}
+            assert args['max_output_tokens']==1600
+        await brain.client.close()
+    run(case())

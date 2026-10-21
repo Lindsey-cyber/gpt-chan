@@ -52,3 +52,10 @@ def test_probe_errors_do_not_interrupt_startup_or_repeat_paid_calls(tmp_path):
         assert report['status']=='failed'
         assert 'private exception' not in str(report)
     asyncio.run(case())
+
+
+def test_banter_review_reports_verbose_and_hostile_drift():
+    assert 'casual_reply_too_long' in review_reply('casual','很长的描述'*40)
+    assert 'casual_reply_overstructured' in review_reply('casual','这是龙。\n\n我再解释一下。')
+    assert 'affection_misread_as_hostility' in review_reply('casual','我比小猫更会记仇，让你站不起来。')
+    assert review_reply('casual','这是龙，只是也喜欢暖和的地方。')==[]
