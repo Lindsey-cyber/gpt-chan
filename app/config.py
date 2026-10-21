@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     allowed_user_ids: str
     text_model: str = 'gpt-4.1-mini'
     image_model: str = 'gpt-image-2.5-sunburst'
+    novelai_token: str = ''
     database_path: str = '/app/data/gptchan.sqlite3'
     max_context_messages: int = 24
     max_context_chars: int = 32000
