@@ -9,9 +9,9 @@ from uuid import uuid4
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import BufferedInputFile, FSInputFile, Message
-from openai import APIStatusError, APITimeoutError, RateLimitError
 
 from app.ai import Brain, ImageRequest, ImageStatus
+from app.api_errors import error_details, error_message
 from app.config import Settings
 from app.companion import Companion, CompanionStore, local_day
 from app.mood import next_mood
@@ -26,18 +26,11 @@ PORTRAIT = ('GPT娘·白龙姬，同一位成年白龙少女。以参考三视�
             '画一幅完整插画，不要三视图、文字或水印。具体场景与构图：')
 
 def report_error(label, exc):
-    # Do not log exception bodies, requests, tokens, prompts, or private messages.
-    log.error('%s type=%s status=%s request_id=%s', label, type(exc).__name__,
-              getattr(exc, 'status_code', None), getattr(exc, 'request_id', None))
-
-def error_message(exc):
-    if isinstance(exc, RateLimitError):
-        return '请求额度或速率暂时受限，稍后再试。'
-    if isinstance(exc, APITimeoutError):
-        return '这次等待超时了，结果暂时无法确认。我没有自动重画；需要的话请明确说再试一次。'
-    if isinstance(exc, APIStatusError) and exc.status_code in (400, 401, 403, 404):
-        return '这次请求被接口拒绝了，需要检查模型权限、账户配置或绘图要求。'
-    return '这次没能完成，稍后再试一次吧。'
+    # Only allowlisted structured metadata: never error bodies or messages.
+    detail = error_details(exc)
+    log.error('%s type=%s status=%s request_id=%s code=%s api_type=%s param=%s moderation_stage=%s',
+        label,type(exc).__name__,getattr(exc,'status_code',None),getattr(exc,'request_id',None),
+        detail['code'],detail['api_type'],detail['param'],detail['moderation_stage'])
 
 class UserSerial(BaseMiddleware):
     def __init__(self, settings, companion=None):
@@ -215,7 +208,7 @@ def build_router(settings, store, brain, serial=None, companion=None):
         except Exception as exc:
             await store.set_image_task(uid, prompt, 'failed')
             report_error('image_generation_failed', exc)
-            await message.answer(error_message(exc))
+            await message.answer(error_message(exc,image=True))
 
     @router.message(Command('draw'))
     async def draw(message):
