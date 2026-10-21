@@ -6,19 +6,20 @@ from pathlib import Path
 
 from app.ai import ImageRequest
 from app.personas import profile_prompt
+from app.mood import next_mood
 from app.persona_probe import review_reply
 
 log=logging.getLogger(__name__)
 
 
 async def profile_probe(brain, data_dir):
-    key=hashlib.sha256(('v2:'+brain.text_model+profile_prompt('bailongji')+profile_prompt('xiaobai')).encode()).hexdigest()[:16]
+    key=hashlib.sha256(('v3:'+brain.text_model+profile_prompt('bailongji')+profile_prompt('xiaobai')).encode()).hexdigest()[:16]
     marker=Path(data_dir)/f'profile-probe-{key}.json'
     try:
         with marker.open('x') as out: json.dump({'status':'attempted'},out)
     except FileExistsError:
         return
-    history=[]; rows=[]; issues=[]; task=None
+    history=[]; rows=[]; issues=[]; task=None; states={}
     scenario=(('bailongji','familiar','你是谁嘛'),
         ('xiaobai','familiar','我不认识你'),
         ('xiaobai','casual','摸摸头，再给你一块小饼干'),
@@ -28,7 +29,9 @@ async def profile_probe(brain, data_dir):
         ('bailongji','technical','认真一点，3乘7是多少？'))
     try:
         for persona,kind,prompt in scenario:
-            answer=await brain.chat(history,[],prompt,persona=persona,image_task=task)
+            mood,remaining=next_mood(prompt,*states.get(persona,('steady',0)))
+            answer=await brain.chat(history,[],prompt,persona=persona,image_task=task,mood=mood)
+            if isinstance(answer,str): states[persona]=(mood,remaining)
             found=review_reply(kind,answer)
             if isinstance(answer,ImageRequest):
                 if not answer.self_portrait: found.append('portrait_identity_lost')
